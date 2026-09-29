@@ -211,8 +211,8 @@ function createWindow() {
   }
 
   const { width: screenWidth, height: screenHeight } = screen.getPrimaryDisplay().workAreaSize;
-  const windowWidth = 380;
-  const windowHeight = 680;
+  const windowWidth = 400;
+  const windowHeight = Math.min(800, screenHeight - 20);
 
   const x = screenWidth - windowWidth - 10;
   const y = screenHeight - windowHeight - 10;
@@ -324,16 +324,25 @@ ipcMain.handle('fetch-usage', async () => {
   return await getUsage();
 });
 
+// "default_claude_max_5x" → "Max 5x", subscriptionType "pro" → "Pro"
+function formatPlan(creds) {
+  const tier = creds?.rateLimitTier?.match(/max_(\d+x)/i);
+  if (tier) return `Max ${tier[1]}`;
+  const sub = creds?.subscriptionType;
+  return sub ? sub.charAt(0).toUpperCase() + sub.slice(1) : null;
+}
+
 ipcMain.handle('fetch-profile', async () => {
+  const plan = formatPlan(loadClaudeCodeCredentials());
   try {
     const claudeConfig = path.join(os.homedir(), '.claude.json');
     if (fs.existsSync(claudeConfig)) {
       const config = JSON.parse(fs.readFileSync(claudeConfig, 'utf8'));
-      if (config.oauthAccount?.emailAddress) return { email: config.oauthAccount.emailAddress };
-      if (config.oauthAccount?.displayName)  return { email: config.oauthAccount.displayName };
+      const email = config.oauthAccount?.emailAddress || config.oauthAccount?.displayName;
+      if (email) return { email, plan };
     }
   } catch (e) {}
-  return await authorizedFetch(USERINFO_URL);
+  return { ...(await authorizedFetch(USERINFO_URL)), plan };
 });
 
 // IPC: History

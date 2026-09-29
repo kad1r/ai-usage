@@ -17,12 +17,10 @@
       "main.js",
       "preload.js",
       "renderer.js",
-      "detailedStats.js",
       "scanner.js",
-      "chart.js",
-      "gauge.js",
       "index.html",
       "styles.css",
+      "fonts/**/*",
       "icon.ico",
       "providers/**/*"
     ],
