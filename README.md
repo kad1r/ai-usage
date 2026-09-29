@@ -206,4 +206,4 @@ claude-usage-widget/
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
