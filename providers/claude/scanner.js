@@ -126,7 +126,7 @@ function scanFile(db, filePath) {
 
     for (const line of lines) {
       let record;
-      try { record = JSON.parse(line); } catch (e) { continue; }
+      try { record = JSON.parse(line); } catch (e) { console.warn('[claude/scanner] JSON parse error in', filePath, ':', e.message); continue; }
 
       if (record.type !== 'assistant') continue;
       const usage = record.message?.usage;
@@ -244,15 +244,19 @@ function queryStats(filters = {}) {
 
     const sessions = db.prepare(`SELECT * FROM sessions WHERE ${whereSession}`).all(...params);
     let totalCost = 0;
+    const projectCost = new Map();
     for (const s of sessions) {
-      totalCost += calcCost(s.model, s.total_input_tokens, s.total_output_tokens, s.total_cache_read, s.total_cache_creation);
+      const cost = calcCost(s.model, s.total_input_tokens, s.total_output_tokens, s.total_cache_read, s.total_cache_creation);
+      totalCost += cost;
+      projectCost.set(s.project_name, (projectCost.get(s.project_name) || 0) + cost);
     }
 
     const dailyRows = db.prepare(`
-      SELECT DATE(first_timestamp) as day,
+      SELECT DATE(first_timestamp, 'localtime') as day,
              SUM(total_input_tokens) as input,
              SUM(total_output_tokens) as output,
-             SUM(total_cache_read) as cacheRead
+             SUM(total_cache_read) as cacheRead,
+             SUM(total_cache_creation) as cacheWrite
       FROM sessions WHERE ${whereSession}
       GROUP BY day ORDER BY day ASC
     `).all(...params);
@@ -263,7 +267,7 @@ function queryStats(filters = {}) {
              COUNT(*) as sessionCount
       FROM sessions WHERE ${whereSession}
       GROUP BY project_name ORDER BY totalTokens DESC LIMIT 10
-    `).all(...params);
+    `).all(...params).map(r => ({ ...r, cost: projectCost.get(r.project_name) || 0 }));
 
     const modelRows = db.prepare(`
       SELECT model,

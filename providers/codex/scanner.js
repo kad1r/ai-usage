@@ -56,7 +56,7 @@ function scanAndStore(db) {
 
     for (const line of lines) {
       let msg;
-      try { msg = JSON.parse(line); } catch { continue; }
+      try { msg = JSON.parse(line); } catch (e) { console.warn('[codex/scanner] JSON parse error in', filePath, ':', e.message); continue; }
       if (!msg || typeof msg !== 'object' || Array.isArray(msg)) continue;
 
       const usage = msg.usage || msg.response?.usage;

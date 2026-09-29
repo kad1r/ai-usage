@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2026-09-29
+
+### Added
+
+#### New "AI Usage" design
+- Single 400×800 window with a new header (last-updated time, refresh, settings, overflow menu)
+- Provider tabs showing each provider's peak utilisation, plus a `+` shortcut to provider settings
+- **Summary view**
+  - Account e-mail and subscription plan badge (e.g. `Max 20x`, read from Claude Code credentials)
+  - Arc gauges for the 5-hour and weekly limits with status pill (Relaxed / Watch / Critical) and time to reset
+  - Weekly-limit projection: estimates where the weekly limit will land at reset, or when it will fill up at the current pace
+  - 7-day utilisation line chart (weekly + 5-hour) with hover tooltip and day highlight
+  - Providers without limit data show a 7-day token chart instead
+- **Detailed view**
+  - 7 / 30 / 90-day period switch and model filter
+  - Cost, session and turn KPI cards
+  - Daily token bars with per-day hover, change vs the previous period, and cache / input / output mix
+  - Model mix bar with per-model token share
+  - Top projects ranked by cost
+- **Settings screen**
+  - Providers list with connection status and API key entry
+  - Launch at Windows startup
+  - **Theme: System / Light / Dark** — System follows the Windows theme live
+  - Language (TR / EN), refresh interval (1 / 5 / 15 min)
+  - Limit alert: desktop notification when a limit passes 80% (once per reset window)
+- `Ctrl+Q` quits the app
+
+#### Light theme
+- Full light palette for every screen, chart and gauge
+
+### Changed
+- Charts are now inline SVG — Chart.js CDN dependency, `gauge.js`, `chart.js` and `detailedStats.js` removed
+- Inter and Roboto Mono fonts are bundled in `fonts/`; the app no longer loads anything from the network for its UI and the CSP no longer allows external scripts or fonts
+- Scanner returns per-project cost and cache-write tokens, and groups days in local time
+- The header's "updated" time reflects when the data was actually fetched; cached data is marked as such
+
+### Fixed
+- **Usage failing with `HTTP 429`** — the usage endpoint is rate limited per OAuth token (shared with Claude Code). Responses are now cached for 2 minutes, concurrent requests are merged, `Retry-After` is honoured, and the last known data (persisted to disk) is shown while rate limited
+- **Usage history could be wiped** — when two instances wrote `history.json` at the same time, a half-written file was read as empty and the next save overwrote all history
+  - History, settings and usage cache are written atomically (temp file + rename)
+  - An unreadable `history.json` is moved aside as `history.corrupt-<timestamp>.json` instead of being overwritten
+  - Single-instance lock: launching the app again focuses the running instance
+- Model-mix colours no longer repeat for two models of the same family
+
+---
+
+## [1.2.0] - 2026-04-16
+
+### Changed
+
+#### UI Redesign
+- Pill-style segmented tab bar (clearer active state)
+- Provider settings as bordered cards with two-row layout
+- Provider tabs now have a separator border to prevent scroll bleed
+
+#### Internationalisation (TR / EN)
+- Language toggle button in the footer
+- All labels, status text, chart annotations, and gauge statuses switch between Turkish and English
+
+#### Authentication
+- Removed OAuth / Client ID flow — the app now reads credentials directly from Claude Code's `~/.claude/.credentials.json`
+- No setup screen needed; just run `claude login` if not already authenticated
+
+#### Charts
+- Smooth bezier area chart (two-pass fill + stroke, no noisy dots)
+- Doughnut model-distribution chart with center-text token total and vibrant palette
+
+### Fixed
+- Provider settings button overflow (flex input min-width)
+- WebKit flex + overflow-y padding-bottom bug in provider settings panel
+
+---
+
 ## [1.1.0] - 2026-04-15
 
 ### Added
@@ -112,5 +185,7 @@ The first public release of Claude Usage — a Windows system tray app for track
 
 ---
 
-[1.1.0]: https://github.com/your-username/claude-usage-app/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/your-username/claude-usage-app/releases/tag/v1.0.0
+[1.3.0]: https://github.com/kad1r/claude-usage-widget/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/kad1r/claude-usage-widget/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/kad1r/claude-usage-widget/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/kad1r/claude-usage-widget/releases/tag/release

@@ -67,7 +67,7 @@ function scanAndStore(db) {
     let session;
     try {
       session = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    } catch { continue; }
+    } catch (e) { console.warn('[gemini/scanner] JSON parse error in', filePath, ':', e.message); continue; }
 
     if (!session || !Array.isArray(session.messages)) continue;
 

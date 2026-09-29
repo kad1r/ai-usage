@@ -53,7 +53,7 @@ function scanAndStore(db) {
     if (existing && existing.mtime === Math.floor(stat.mtimeMs)) continue;
 
     let data;
-    try { data = JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { continue; }
+    try { data = JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch (e) { console.warn('[cursor/scanner] JSON parse error in', filePath, ':', e.message); continue; }
     if (!data || typeof data !== 'object') continue;
 
     // Cursor usage data can be an array or an object with a usage/conversations array

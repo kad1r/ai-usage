@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, nativeTheme, screen } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, nativeTheme, screen, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -28,6 +28,44 @@ function ensureDataDir() {
   }
 }
 
+// ─── safeStorage helpers ──────────────────────────────────────────────────────
+// Encrypts using OS keychain (Windows DPAPI / macOS Keychain).
+// Falls back to plaintext if encryption is unavailable (e.g. headless Linux).
+function encryptApiKey(plaintext) {
+  if (!plaintext) return null;
+  if (safeStorage.isEncryptionAvailable()) {
+    return safeStorage.encryptString(plaintext).toString('base64');
+  }
+  console.warn('[safeStorage] Encryption not available — storing API key as plaintext');
+  return plaintext;
+}
+
+function decryptApiKey(stored) {
+  if (!stored) return null;
+  if (!safeStorage.isEncryptionAvailable()) return stored;
+  try {
+    return safeStorage.decryptString(Buffer.from(stored, 'base64'));
+  } catch {
+    // Migration: value was stored as plaintext before safeStorage was introduced
+    return stored;
+  }
+}
+
+// Write to a temp file and rename over the target, so a reader never sees a
+// half-written file.
+function writeJsonAtomic(file, data) {
+  ensureDataDir();
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data));
+  try {
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    // Target locked by another reader (Windows): fall back to a direct write
+    fs.writeFileSync(file, JSON.stringify(data));
+    fs.rmSync(tmp, { force: true });
+  }
+}
+
 function loadSettings() {
   try {
     if (fs.existsSync(SETTINGS_PATH)) return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
@@ -36,24 +74,26 @@ function loadSettings() {
 }
 
 function saveSettings(settings) {
-  ensureDataDir();
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings));
+  writeJsonAtomic(SETTINGS_PATH, settings);
 }
 
 function loadHistory() {
+  if (!fs.existsSync(HISTORY_PATH)) return { dataPoints: [] };
   try {
-    if (fs.existsSync(HISTORY_PATH)) {
-      return JSON.parse(fs.readFileSync(HISTORY_PATH, 'utf8'));
-    }
+    const history = JSON.parse(fs.readFileSync(HISTORY_PATH, 'utf8'));
+    if (Array.isArray(history?.dataPoints)) return history;
   } catch (e) {}
+  // Unreadable file: keep it aside instead of letting the next save overwrite it
+  const backup = HISTORY_PATH.replace(/\.json$/, `.corrupt-${Date.now()}.json`);
+  try { fs.renameSync(HISTORY_PATH, backup); } catch (e) {}
+  console.error('[history] unreadable history.json moved to', backup);
   return { dataPoints: [] };
 }
 
 function saveHistory(history) {
-  ensureDataDir();
   const cutoff = Date.now() - 30 * 86400 * 1000;
   history.dataPoints = history.dataPoints.filter(p => p.timestamp > cutoff);
-  fs.writeFileSync(HISTORY_PATH, JSON.stringify(history));
+  writeJsonAtomic(HISTORY_PATH, history);
 }
 
 // Read the OAuth token that Claude Code CLI stores after `claude login`
@@ -84,11 +124,79 @@ async function authorizedFetch(url) {
     throw new Error('Oturum süresi doldu. Terminalde `claude login` çalıştırın.');
   }
 
+  if (response.status === 429) {
+    const err = new Error('HTTP 429');
+    err.retryAfterSec = parseInt(response.headers.get('retry-after'), 10) || 300;
+    throw err;
+  }
+
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
 
   return response.json();
+}
+
+// ─── Usage cache ──────────────────────────────────────────────────────────────
+// The usage endpoint is rate limited per OAuth token, and Claude Code itself
+// polls it with the same token. Cache responses, share in-flight requests and
+// back off on 429 so the app keeps showing the last known values.
+const USAGE_CACHE_PATH = path.join(DATA_DIR, 'usage-cache.json');
+const USAGE_TTL_MS = 2 * 60 * 1000;
+
+let usageCache = null;       // { data, fetchedAt }
+let usageInFlight = null;
+let usageBlockedUntil = 0;
+
+function loadUsageCache() {
+  try {
+    if (fs.existsSync(USAGE_CACHE_PATH)) return JSON.parse(fs.readFileSync(USAGE_CACHE_PATH, 'utf8'));
+  } catch (e) {}
+  return null;
+}
+
+function saveUsageCache(cache) {
+  try {
+    writeJsonAtomic(USAGE_CACHE_PATH, cache);
+  } catch (e) {}
+}
+
+function withCacheMeta(cache, stale) {
+  return { ...cache.data, _fetchedAt: cache.fetchedAt, _stale: stale };
+}
+
+async function getUsage() {
+  if (!usageCache) usageCache = loadUsageCache();
+
+  const now = Date.now();
+  if (usageCache && now - usageCache.fetchedAt < USAGE_TTL_MS) return withCacheMeta(usageCache, false);
+
+  if (now < usageBlockedUntil) {
+    if (usageCache) return withCacheMeta(usageCache, true);
+    const mins = Math.ceil((usageBlockedUntil - now) / 60000);
+    throw new Error(`API limiti aşıldı, ~${mins} dk sonra tekrar denenecek.`);
+  }
+
+  if (!usageInFlight) {
+    usageInFlight = authorizedFetch(USAGE_URL)
+      .then(data => {
+        usageCache = { data, fetchedAt: Date.now() };
+        saveUsageCache(usageCache);
+        return withCacheMeta(usageCache, false);
+      })
+      .catch(err => {
+        if (err.retryAfterSec) {
+          usageBlockedUntil = Date.now() + err.retryAfterSec * 1000;
+          console.warn(`[usage] rate limited, retry after ${err.retryAfterSec}s`);
+          if (usageCache) return withCacheMeta(usageCache, true);
+          const mins = Math.ceil(err.retryAfterSec / 60);
+          throw new Error(`API limiti aşıldı, ~${mins} dk sonra tekrar denenecek.`);
+        }
+        throw err;
+      })
+      .finally(() => { usageInFlight = null; });
+  }
+  return usageInFlight;
 }
 
 function createTrayIcon() {
@@ -103,8 +211,8 @@ function createWindow() {
   }
 
   const { width: screenWidth, height: screenHeight } = screen.getPrimaryDisplay().workAreaSize;
-  const windowWidth = 380;
-  const windowHeight = 680;
+  const windowWidth = 400;
+  const windowHeight = Math.min(800, screenHeight - 20);
 
   const x = screenWidth - windowWidth - 10;
   const y = screenHeight - windowHeight - 10;
@@ -157,7 +265,17 @@ async function scanAllProviders() {
   }
 }
 
+// One instance per data directory — two instances (e.g. installed + dev build)
+// writing the same history file is how history got wiped.
+const gotInstanceLock = app.requestSingleInstanceLock();
+if (!gotInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => createWindow());
+}
+
 app.whenReady().then(() => {
+  if (!gotInstanceLock) return;
   app.dock?.hide?.();
 
   // ClaudeProvider.isAvailable() checks if the credentials file exists
@@ -166,7 +284,7 @@ app.whenReady().then(() => {
   registry.register(new CodexProvider());
   registry.register(new GeminiProvider());
   registry.register(new CursorProvider());
-  claudeProvider.setAuthorizedFetch(authorizedFetch);
+  claudeProvider.setAuthorizedFetch(url => (url === USAGE_URL ? getUsage() : authorizedFetch(url)));
 
   scanAllProviders();
   setInterval(scanAllProviders, 5 * 60 * 1000);
@@ -203,19 +321,28 @@ ipcMain.handle('sign-out', () => true); // No-op: session managed by Claude Code
 
 // IPC: Usage & Profile
 ipcMain.handle('fetch-usage', async () => {
-  return await authorizedFetch(USAGE_URL);
+  return await getUsage();
 });
 
+// "default_claude_max_5x" → "Max 5x", subscriptionType "pro" → "Pro"
+function formatPlan(creds) {
+  const tier = creds?.rateLimitTier?.match(/max_(\d+x)/i);
+  if (tier) return `Max ${tier[1]}`;
+  const sub = creds?.subscriptionType;
+  return sub ? sub.charAt(0).toUpperCase() + sub.slice(1) : null;
+}
+
 ipcMain.handle('fetch-profile', async () => {
+  const plan = formatPlan(loadClaudeCodeCredentials());
   try {
     const claudeConfig = path.join(os.homedir(), '.claude.json');
     if (fs.existsSync(claudeConfig)) {
       const config = JSON.parse(fs.readFileSync(claudeConfig, 'utf8'));
-      if (config.oauthAccount?.emailAddress) return { email: config.oauthAccount.emailAddress };
-      if (config.oauthAccount?.displayName)  return { email: config.oauthAccount.displayName };
+      const email = config.oauthAccount?.emailAddress || config.oauthAccount?.displayName;
+      if (email) return { email, plan };
     }
   } catch (e) {}
-  return await authorizedFetch(USERINFO_URL);
+  return { ...(await authorizedFetch(USERINFO_URL)), plan };
 });
 
 // IPC: History
@@ -298,11 +425,23 @@ ipcMain.handle('save-provider-settings', async (event, { providerId, apiKey, ena
     db.prepare(`
       INSERT OR REPLACE INTO providers (id, enabled, api_key)
       VALUES (?, ?, ?)
-    `).run(providerId, enabled ? 1 : 0, apiKey || null);
+    `).run(providerId, enabled ? 1 : 0, encryptApiKey(apiKey || null));
   } finally {
     db?.close();
   }
   return { ok: true };
+});
+
+ipcMain.handle('get-provider-api-key', async (event, { providerId }) => {
+  const scannerModule = require('./providers/claude/scanner');
+  let db;
+  try {
+    db = scannerModule.openDb();
+    const row = db.prepare('SELECT api_key FROM providers WHERE id = ?').get(providerId);
+    return { key: decryptApiKey(row?.api_key || null) };
+  } finally {
+    db?.close();
+  }
 });
 
 ipcMain.handle('scan-provider-local', async (event, { providerId }) => {
