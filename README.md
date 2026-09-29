@@ -9,7 +9,7 @@ A lightweight Windows system tray application that tracks your AI usage across m
 ---
 
 <p align="center">
-  <img src="screenshot.png" alt="Claude Usage Dashboard" width="380">
+  <img src="screenshot.png" alt="AI Usage window in dark and light themes" width="760">
 </p>
 
 ---
