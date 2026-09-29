@@ -124,11 +124,79 @@ async function authorizedFetch(url) {
     throw new Error('Oturum süresi doldu. Terminalde `claude login` çalıştırın.');
   }
 
+  if (response.status === 429) {
+    const err = new Error('HTTP 429');
+    err.retryAfterSec = parseInt(response.headers.get('retry-after'), 10) || 300;
+    throw err;
+  }
+
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
 
   return response.json();
+}
+
+// ─── Usage cache ──────────────────────────────────────────────────────────────
+// The usage endpoint is rate limited per OAuth token, and Claude Code itself
+// polls it with the same token. Cache responses, share in-flight requests and
+// back off on 429 so the app keeps showing the last known values.
+const USAGE_CACHE_PATH = path.join(DATA_DIR, 'usage-cache.json');
+const USAGE_TTL_MS = 2 * 60 * 1000;
+
+let usageCache = null;       // { data, fetchedAt }
+let usageInFlight = null;
+let usageBlockedUntil = 0;
+
+function loadUsageCache() {
+  try {
+    if (fs.existsSync(USAGE_CACHE_PATH)) return JSON.parse(fs.readFileSync(USAGE_CACHE_PATH, 'utf8'));
+  } catch (e) {}
+  return null;
+}
+
+function saveUsageCache(cache) {
+  try {
+    writeJsonAtomic(USAGE_CACHE_PATH, cache);
+  } catch (e) {}
+}
+
+function withCacheMeta(cache, stale) {
+  return { ...cache.data, _fetchedAt: cache.fetchedAt, _stale: stale };
+}
+
+async function getUsage() {
+  if (!usageCache) usageCache = loadUsageCache();
+
+  const now = Date.now();
+  if (usageCache && now - usageCache.fetchedAt < USAGE_TTL_MS) return withCacheMeta(usageCache, false);
+
+  if (now < usageBlockedUntil) {
+    if (usageCache) return withCacheMeta(usageCache, true);
+    const mins = Math.ceil((usageBlockedUntil - now) / 60000);
+    throw new Error(`API limiti aşıldı, ~${mins} dk sonra tekrar denenecek.`);
+  }
+
+  if (!usageInFlight) {
+    usageInFlight = authorizedFetch(USAGE_URL)
+      .then(data => {
+        usageCache = { data, fetchedAt: Date.now() };
+        saveUsageCache(usageCache);
+        return withCacheMeta(usageCache, false);
+      })
+      .catch(err => {
+        if (err.retryAfterSec) {
+          usageBlockedUntil = Date.now() + err.retryAfterSec * 1000;
+          console.warn(`[usage] rate limited, retry after ${err.retryAfterSec}s`);
+          if (usageCache) return withCacheMeta(usageCache, true);
+          const mins = Math.ceil(err.retryAfterSec / 60);
+          throw new Error(`API limiti aşıldı, ~${mins} dk sonra tekrar denenecek.`);
+        }
+        throw err;
+      })
+      .finally(() => { usageInFlight = null; });
+  }
+  return usageInFlight;
 }
 
 function createTrayIcon() {
@@ -216,7 +284,7 @@ app.whenReady().then(() => {
   registry.register(new CodexProvider());
   registry.register(new GeminiProvider());
   registry.register(new CursorProvider());
-  claudeProvider.setAuthorizedFetch(authorizedFetch);
+  claudeProvider.setAuthorizedFetch(url => (url === USAGE_URL ? getUsage() : authorizedFetch(url)));
 
   scanAllProviders();
   setInterval(scanAllProviders, 5 * 60 * 1000);
@@ -253,7 +321,7 @@ ipcMain.handle('sign-out', () => true); // No-op: session managed by Claude Code
 
 // IPC: Usage & Profile
 ipcMain.handle('fetch-usage', async () => {
-  return await authorizedFetch(USAGE_URL);
+  return await getUsage();
 });
 
 ipcMain.handle('fetch-profile', async () => {
