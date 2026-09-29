@@ -51,6 +51,21 @@ function decryptApiKey(stored) {
   }
 }
 
+// Write to a temp file and rename over the target, so a reader never sees a
+// half-written file.
+function writeJsonAtomic(file, data) {
+  ensureDataDir();
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data));
+  try {
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    // Target locked by another reader (Windows): fall back to a direct write
+    fs.writeFileSync(file, JSON.stringify(data));
+    fs.rmSync(tmp, { force: true });
+  }
+}
+
 function loadSettings() {
   try {
     if (fs.existsSync(SETTINGS_PATH)) return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
@@ -59,24 +74,26 @@ function loadSettings() {
 }
 
 function saveSettings(settings) {
-  ensureDataDir();
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings));
+  writeJsonAtomic(SETTINGS_PATH, settings);
 }
 
 function loadHistory() {
+  if (!fs.existsSync(HISTORY_PATH)) return { dataPoints: [] };
   try {
-    if (fs.existsSync(HISTORY_PATH)) {
-      return JSON.parse(fs.readFileSync(HISTORY_PATH, 'utf8'));
-    }
+    const history = JSON.parse(fs.readFileSync(HISTORY_PATH, 'utf8'));
+    if (Array.isArray(history?.dataPoints)) return history;
   } catch (e) {}
+  // Unreadable file: keep it aside instead of letting the next save overwrite it
+  const backup = HISTORY_PATH.replace(/\.json$/, `.corrupt-${Date.now()}.json`);
+  try { fs.renameSync(HISTORY_PATH, backup); } catch (e) {}
+  console.error('[history] unreadable history.json moved to', backup);
   return { dataPoints: [] };
 }
 
 function saveHistory(history) {
-  ensureDataDir();
   const cutoff = Date.now() - 30 * 86400 * 1000;
   history.dataPoints = history.dataPoints.filter(p => p.timestamp > cutoff);
-  fs.writeFileSync(HISTORY_PATH, JSON.stringify(history));
+  writeJsonAtomic(HISTORY_PATH, history);
 }
 
 // Read the OAuth token that Claude Code CLI stores after `claude login`
@@ -180,7 +197,17 @@ async function scanAllProviders() {
   }
 }
 
+// One instance per data directory — two instances (e.g. installed + dev build)
+// writing the same history file is how history got wiped.
+const gotInstanceLock = app.requestSingleInstanceLock();
+if (!gotInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => createWindow());
+}
+
 app.whenReady().then(() => {
+  if (!gotInstanceLock) return;
   app.dock?.hide?.();
 
   // ClaudeProvider.isAvailable() checks if the credentials file exists
