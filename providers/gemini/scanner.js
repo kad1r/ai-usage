@@ -24,8 +24,13 @@ function getPricing(model) {
   return key ? PRICING[key] : PRICING['gemini-2.0-flash'];
 }
 
+// Bump when the parsing/token maths changes so already-processed files are re-read
+const PARSER_VERSION = 2;
+const processedKey = filePath => `gemini:v${PARSER_VERSION}:${filePath}`;
+
 /**
- * Find all session chat files under ~/.gemini/tmp/<project>/chats/*.json
+ * Find all session chat files under ~/.gemini/tmp/<project>/chats/
+ * (*.json — older CLI, *.jsonl — current CLI)
  * Returns [{ filePath, projectName }]
  */
 function findChatFiles() {
@@ -44,13 +49,56 @@ function findChatFiles() {
     try { files = fs.readdirSync(chatsDir, { withFileTypes: true }); } catch { continue; }
 
     for (const file of files) {
-      if (file.isFile() && file.name.endsWith('.json')) {
+      if (file.isFile() && /\.jsonl?$/.test(file.name)) {
         results.push({ filePath: path.join(chatsDir, file.name), projectName: project.name });
       }
     }
   }
 
   return results;
+}
+
+/**
+ * Parse a session file into { sessionId, startTime, messages }.
+ *
+ * .json  — one object with a `messages` array.
+ * .jsonl — append-only log: a header line ({ sessionId, startTime, ... }), one
+ *          line per message ({ id, type, ... }) and `{ $set: {...} }` patches.
+ *          A message is re-appended whenever it is updated, so the same id can
+ *          appear several times — keep the last version of each.
+ */
+function parseSession(filePath) {
+  const text = fs.readFileSync(filePath, 'utf8');
+  if (!filePath.endsWith('.jsonl')) return JSON.parse(text);
+
+  let header = {};
+  const byId = new Map();
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let obj;
+    try { obj = JSON.parse(line); } catch { continue; } // tolerate a partially written last line
+    if (obj.$set) {
+      for (const m of obj.$set.messages || []) if (m?.id) byId.set(m.id, m);
+    } else if (obj.id && obj.type) {
+      byId.set(obj.id, obj);
+    } else if (obj.sessionId) {
+      header = obj;
+    }
+  }
+  return { ...header, messages: [...byId.values()] };
+}
+
+/**
+ * Gemini reports `input` including cached tokens, and bills `thoughts` as
+ * output (total = input + output + thoughts + tool).
+ */
+function normalizeTokens(t) {
+  const cached = t.cached || 0;
+  return {
+    input:  Math.max(0, (t.input || 0) - cached),
+    output: (t.output || 0) + (t.thoughts || 0),
+    cached
+  };
 }
 
 function scanAndStore(db) {
@@ -61,13 +109,14 @@ function scanAndStore(db) {
     let stat;
     try { stat = fs.statSync(filePath); } catch { continue; }
 
-    const existing = db.prepare('SELECT mtime FROM processed_files WHERE path = ?').get(filePath);
+    const key = processedKey(filePath);
+    const existing = db.prepare('SELECT mtime FROM processed_files WHERE path = ?').get(key);
     if (existing && existing.mtime === Math.floor(stat.mtimeMs)) continue;
 
     let session;
     try {
-      session = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    } catch (e) { console.warn('[gemini/scanner] JSON parse error in', filePath, ':', e.message); continue; }
+      session = parseSession(filePath);
+    } catch (e) { console.warn('[gemini/scanner] parse error in', filePath, ':', e.message); continue; }
 
     if (!session || !Array.isArray(session.messages)) continue;
 
@@ -82,10 +131,8 @@ function scanAndStore(db) {
       // Only gemini (assistant) messages carry token counts
       if (msg.type !== 'gemini' || !msg.tokens) continue;
 
-      const model        = msg.model || 'gemini-2.5-pro';
-      const inputTokens  = msg.tokens.input  || 0;
-      const outputTokens = msg.tokens.output || 0;
-      const cacheTokens  = msg.tokens.cached || 0;
+      const model = msg.model || 'gemini-2.5-pro';
+      const { input: inputTokens, output: outputTokens, cached: cacheTokens } = normalizeTokens(msg.tokens);
       const ts           = msg.timestamp || session.startTime || new Date().toISOString();
 
       db.prepare(`
@@ -115,10 +162,12 @@ function scanAndStore(db) {
     }
 
     db.prepare('INSERT OR REPLACE INTO processed_files (path, mtime, lines) VALUES (?, ?, ?)')
-      .run(filePath, Math.floor(stat.mtimeMs), session.messages.length);
+      .run(key, Math.floor(stat.mtimeMs), session.messages.length);
+    // Entry written by parser v1 (keyed by the bare path)
+    db.prepare('DELETE FROM processed_files WHERE path = ?').run(filePath);
   }
 
   return { newSessions, newTurns };
 }
 
-module.exports = { scanAndStore, PRICING, getPricing, GEMINI_DIR };
+module.exports = { scanAndStore, parseSession, normalizeTokens, PRICING, getPricing, GEMINI_DIR };
