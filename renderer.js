@@ -77,6 +77,7 @@ const I18N = {
     'kpi-cost': 'Maliyet', 'kpi-sessions': 'Oturum', 'kpi-turns': 'Dönüş',
     'daily-tokens': 'Günlük token', 'token-word': 'token',
     'model-dist': 'Model dağılımı', 'top-projects': 'En çok kullanan projeler',
+    'top-models': 'En çok kullanılan modeller', 'top-models-sub': 'Son 7 gün · istek', 'requests': 'istek',
     'quit': 'Uygulamayı kapat',
     'providers-label': "PROVIDER'LAR", 'general-label': 'GENEL', 'account-label': 'HESAP',
     'launch-at-login': 'Windows açılışında başlat', 'language': 'Dil',
@@ -122,6 +123,7 @@ const I18N = {
     'kpi-cost': 'Cost', 'kpi-sessions': 'Sessions', 'kpi-turns': 'Turns',
     'daily-tokens': 'Daily tokens', 'token-word': 'tokens',
     'model-dist': 'Model mix', 'top-projects': 'Top projects',
+    'top-models': 'Most used models', 'top-models-sub': 'Last 7 days · requests', 'requests': 'requests',
     'quit': 'Quit app',
     'providers-label': 'PROVIDERS', 'general-label': 'GENERAL', 'account-label': 'ACCOUNT',
     'launch-at-login': 'Launch at Windows startup', 'language': 'Language',
@@ -480,7 +482,7 @@ function renderSummary() {
   $('history-card').hidden = !isClaude;
   $('token-summary-card').hidden = isClaude;
   if (isClaude) renderLineChart();
-  else renderSummaryBars();
+  renderSummaryLocal(isClaude);
 }
 
 function limitCard(label, w) {
@@ -640,13 +642,54 @@ function onLineMove(e) {
   }
 }
 
-async function renderSummaryBars() {
+// Local-scan parts of the summary: most-used models (all providers) and the
+// 7-day token bars (providers without limit data)
+async function renderSummaryLocal(isClaude) {
   const provider = state.provider;
   const res = await window.electronAPI.getDetailedStats({ provider, days: 7 }).catch(() => null);
-  if (provider !== state.provider) return;
-  const vals = dailyTotals(res?.success ? res.data.dailyRows : [], 7);
+  if (provider !== state.provider || state.view !== 'summary') return;
+  const data = res?.success ? res.data : null;
+
+  renderTopModels(data?.modelRows);
+  if (isClaude) return;
+  const vals = dailyTotals(data?.dailyRows || [], 7);
   $('summary-bars').innerHTML = barsHtml(vals, -1);
   $('summary-bar-labels').innerHTML = [6, 3, 0].map(n => `<span>${esc(n === 0 ? t('today') : dateLabel(daysAgo(n)))}</span>`).join('');
+}
+
+// Share of requests (turns) per model. Tokens are dominated by cache reads and
+// cost depends on the pricing table, so turns best reflect "how often".
+function renderTopModels(modelRows) {
+  const merged = new Map();
+  for (const r of modelRows || []) {
+    if (!r.model || r.model.startsWith('<')) continue; // e.g. Claude Code's "<synthetic>"
+    const name = shortModel(r.model);
+    merged.set(name, (merged.get(name) || 0) + (r.turns || 0));
+  }
+  let list = [...merged].map(([name, turns]) => ({ name, turns })).filter(m => m.turns > 0).sort((a, b) => b.turns - a.turns);
+  const total = list.reduce((a, b) => a + b.turns, 0);
+
+  $('top-models-card').hidden = total === 0;
+  if (!total) return;
+
+  if (list.length > 4) {
+    const rest = list.slice(3).reduce((a, b) => a + b.turns, 0);
+    list = [...list.slice(0, 3), { name: t('other'), turns: rest, other: true }];
+  }
+  const colors = modelColors(list.map(m => m.name));
+  const items = list.map((m, i) => ({ ...m, color: m.other ? 'var(--text-4)' : colors[i], share: m.turns / total }));
+  const pct = s => (s > 0 && s < 0.01 ? '<1%' : `${Math.round(s * 100)}%`);
+  const count = n => (n >= 10000 ? fmtTokens(n) : n.toLocaleString(t('numLocale')));
+
+  $('top-model-name').textContent = items[0].name;
+  $('top-model-pct').textContent = pct(items[0].share);
+  $('top-models-stack').innerHTML = items.map(m => `<div style="width:${m.share * 100}%;background:${m.color}"></div>`).join('');
+  $('top-models-list').innerHTML = items.map(m => `<div class="model-row">
+      <span class="sw" style="background:${m.color}"></span>
+      <span class="name">${esc(m.name)}</span>
+      <span class="tok">${count(m.turns)} ${esc(t('requests'))}</span>
+      <span class="pct">${pct(m.share)}</span>
+    </div>`).join('');
 }
 
 // ─── Detail view ─────────────────────────────────────────────────────────────

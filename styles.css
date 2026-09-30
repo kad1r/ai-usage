@@ -448,6 +448,10 @@ button { cursor: pointer; }
 .model-row .tok { font-family: var(--mono); font-size: 12px; color: var(--text-2); }
 .model-row .pct { font-family: var(--mono); font-size: 12px; width: 40px; text-align: right; font-weight: 600; }
 
+.top-model { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.top-model-name { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top-model-pct { font-size: 20px; font-weight: 600; color: var(--text-2); }
+
 .project-list { display: flex; flex-direction: column; gap: 10px; }
 .project-row { display: grid; grid-template-columns: 84px 1fr 52px; align-items: center; gap: 10px; font-size: 12.5px; }
 .project-row .name { color: var(--text-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
