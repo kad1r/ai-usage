@@ -1,7 +1,7 @@
 {
-  "name": "claude-usage-app",
+  "name": "ai-usage",
   "version": "1.3.1",
-  "description": "Claude API Usage Tracker - System Tray App",
+  "description": "AI coding tool usage tracker (Claude, Codex, Gemini, Cursor) - System Tray App",
   "license": "MIT",
   "main": "main.js",
   "scripts": {
@@ -10,7 +10,7 @@
   },
   "build": {
     "appId": "com.claude.usage-tracker",
-    "productName": "Claude Usage",
+    "productName": "AI Usage",
     "directories": {
       "output": "dist"
     },
@@ -39,7 +39,7 @@
       "allowToChangeInstallationDirectory": false,
       "installerIcon": "icon.ico",
       "uninstallerIcon": "icon.ico",
-      "shortcutName": "Claude Usage"
+      "shortcutName": "AI Usage"
     }
   },
   "devDependencies": {
