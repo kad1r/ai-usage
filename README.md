@@ -9,8 +9,10 @@ A lightweight Windows system tray application that tracks your AI usage across m
 ---
 
 <p align="center">
-  <img src="screenshot.png" alt="AI Usage window in dark and light themes" width="760">
+  <img src="screenshot.png" alt="Overview in dark and light themes: limit gauges, weekly projection, most used models and the 7-day chart" width="760">
 </p>
+
+<p align="center"><sub>Overview — dark and light themes</sub></p>
 
 ---
 
@@ -32,6 +34,12 @@ A lightweight Windows system tray application that tracks your AI usage across m
 - **Model mix** — Token share per model
 - **Top projects** — Ranked by estimated cost
 - **Time per project**, **models used in each project**, **longest sessions** and **most active days** — durations are active time (breaks over 30 minutes are not counted)
+
+<p align="center">
+  <img src="screenshot-detailed.png" alt="Detailed view: KPIs, daily token bars, token types, model mix, top projects, time per project, models by project, longest sessions and most active days" width="760">
+</p>
+
+<p align="center"><sub>Detailed view (last 30 days) — project names blurred</sub></p>
 
 ### Multi-Provider (Local Scan)
 - **Codex** — Scans OpenAI Codex CLI session logs from `~/.codex/`
