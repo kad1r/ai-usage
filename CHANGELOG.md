@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.1] - 2026-10-01
+
+### Fixed
+- **Antivirus scanning the app every 5 minutes** — 1.5.0 started a new scanner process for every local scan, and antivirus software such as AVG/Avast inspected the (unsigned) exe each time a process started. The scanner process is now started once and reused; it is only restarted if it exits or hangs
+
 ## [1.5.0] - 2026-09-30
 
 ### Fixed
