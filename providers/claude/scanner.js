@@ -388,10 +388,84 @@ function queryStats(filters = {}) {
         : 0
     }));
 
-    return { summary: { ...summary, totalCost }, dailyRows, projectRows, modelRows: modelRowsWithCost, recentSessions };
+    const activity = filters.activity ? queryActivity(db, whereSession, params, sessions) : null;
+
+    return { summary: { ...summary, totalCost }, dailyRows, projectRows, modelRows: modelRowsWithCost, recentSessions, activity };
   } finally {
     db.close();
   }
+}
+
+// Gaps between consecutive requests up to this long count as working time;
+// longer gaps are breaks (sessions are often resumed hours or days later).
+const ACTIVE_GAP_SEC = 30 * 60;
+
+/**
+ * Turn-level activity for the sessions matching `whereSession`:
+ * most active days, longest sessions and time per project (active time),
+ * and which models each project used (counted per request).
+ */
+function queryActivity(db, whereSession, params, sessions) {
+  const inSessions = `session_id IN (SELECT session_id FROM sessions WHERE ${whereSession})`;
+
+  const activeDays = db.prepare(`
+    SELECT DATE(timestamp, 'localtime') AS day,
+           COUNT(*) AS requests,
+           SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens
+    FROM turns WHERE ${inSessions}
+    GROUP BY day ORDER BY requests DESC LIMIT 5
+  `).all(...params);
+
+  const activeBySession = new Map(db.prepare(`
+    WITH gaps AS (
+      SELECT session_id,
+             (julianday(timestamp) - julianday(LAG(timestamp) OVER (PARTITION BY session_id ORDER BY timestamp))) * 86400 AS gap
+      FROM turns WHERE ${inSessions}
+    )
+    SELECT session_id, SUM(CASE WHEN gap <= ${ACTIVE_GAP_SEC} THEN gap ELSE 0 END) AS activeSec
+    FROM gaps GROUP BY session_id
+  `).all(...params).map(r => [r.session_id, r.activeSec || 0]));
+
+  // Subagent transcripts (agent-*.jsonl) run in parallel with their parent
+  // session, so they're left out of time totals to avoid counting hours twice
+  const timed = sessions
+    .filter(s => !String(s.session_id).startsWith('agent-'))
+    .map(s => ({ ...s, activeSec: Math.round(activeBySession.get(s.session_id) || 0) }))
+    .filter(s => s.activeSec > 0);
+
+  const longestSessions = [...timed]
+    .sort((a, b) => b.activeSec - a.activeSec)
+    .slice(0, 5)
+    .map(s => ({ project_name: s.project_name, model: s.model, first_timestamp: s.first_timestamp, turns: s.turn_count, activeSec: s.activeSec }));
+
+  const byProject = new Map();
+  for (const s of timed) {
+    const p = byProject.get(s.project_name) || { project_name: s.project_name, activeSec: 0, sessions: 0 };
+    p.activeSec += s.activeSec;
+    p.sessions += 1;
+    byProject.set(s.project_name, p);
+  }
+  const projectTime = [...byProject.values()].sort((a, b) => b.activeSec - a.activeSec).slice(0, 5);
+
+  // Models per project, counted per request (a session can switch models)
+  const top = new Set(projectTime.map(p => p.project_name));
+  const modelsByProject = new Map();
+  for (const r of db.prepare(`
+    SELECT s.project_name AS project, t.model AS model, COUNT(*) AS requests
+    FROM turns t JOIN sessions s ON s.session_id = t.session_id
+    WHERE t.${inSessions} AND t.model IS NOT NULL AND t.model NOT LIKE '<%'
+    GROUP BY s.project_name, t.model
+  `).all(...params)) {
+    if (!top.has(r.project)) continue;
+    if (!modelsByProject.has(r.project)) modelsByProject.set(r.project, []);
+    modelsByProject.get(r.project).push({ model: r.model, requests: r.requests });
+  }
+  const projectModels = projectTime.map(p => ({
+    project_name: p.project_name,
+    models: (modelsByProject.get(p.project_name) || []).sort((a, b) => b.requests - a.requests)
+  }));
+
+  return { activeDays, longestSessions, projectTime, projectModels };
 }
 
 function getAvailableModels() {

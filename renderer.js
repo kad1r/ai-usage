@@ -78,6 +78,10 @@ const I18N = {
     'daily-tokens': 'Günlük token', 'token-word': 'token',
     'model-dist': 'Model dağılımı', 'top-projects': 'En çok kullanan projeler',
     'top-models': 'En çok kullanılan modeller', 'top-models-sub': 'Son 7 gün · istek', 'requests': 'istek',
+    'tok-input': 'Input', 'tok-output': 'Output', 'tok-cache-read': 'Cache okuma', 'tok-cache-write': 'Cache yazma',
+    'project-time': 'En çok zaman harcanan projeler', 'active-time-note': 'Aktif süre: 30 dakikadan uzun aralar sayılmaz',
+    'project-models': 'Projelere göre modeller', 'longest-sessions': 'En uzun oturumlar', 'active-days': 'En aktif günler',
+    'weekdays': ['Paz', 'Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt'],
     'quit': 'Uygulamayı kapat',
     'providers-label': "PROVIDER'LAR", 'general-label': 'GENEL', 'account-label': 'HESAP',
     'launch-at-login': 'Windows açılışında başlat', 'language': 'Dil',
@@ -124,6 +128,10 @@ const I18N = {
     'daily-tokens': 'Daily tokens', 'token-word': 'tokens',
     'model-dist': 'Model mix', 'top-projects': 'Top projects',
     'top-models': 'Most used models', 'top-models-sub': 'Last 7 days · requests', 'requests': 'requests',
+    'tok-input': 'Input', 'tok-output': 'Output', 'tok-cache-read': 'Cache read', 'tok-cache-write': 'Cache write',
+    'project-time': 'Most time spent', 'active-time-note': 'Active time: breaks longer than 30 minutes are not counted',
+    'project-models': 'Models by project', 'longest-sessions': 'Longest sessions', 'active-days': 'Most active days',
+    'weekdays': ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
     'quit': 'Quit app',
     'providers-label': 'PROVIDERS', 'general-label': 'GENERAL', 'account-label': 'ACCOUNT',
     'launch-at-login': 'Launch at Windows startup', 'language': 'Language',
@@ -399,8 +407,9 @@ async function loadDetail() {
 
   // days = 0 is "all time": no previous period to compare against
   const [all, filtered, twice] = await Promise.all([
-    q({ provider, days }),
-    model === 'all' ? null : q({ provider, days, model }),
+    // Activity (turn-level) queries only run for the query that feeds the view
+    q({ provider, days, activity: model === 'all' }),
+    model === 'all' ? null : q({ provider, days, model, activity: true }),
     days ? q({ provider, days: days * 2, model }) : null
   ]);
   state.detail = { key: `${provider}|${days}|${model}`, all, current: filtered || all, twice };
@@ -741,6 +750,7 @@ async function renderDetail() {
   renderDailyBars(current, twice);
   renderModelMix(all);
   renderProjects(current);
+  renderActivity(current?.activity);
 }
 
 const MAX_BARS = 45;
@@ -797,17 +807,97 @@ function renderDailyBars(current, twice) {
     chEl.hidden = true;
   }
 
-  // Token mix
+  // Token types: absolute amounts and share of the period total
   const sm = current?.summary || {};
-  const cache = (sm.totalCacheRead || 0) + (sm.totalCacheWrite || 0);
-  const all = cache + (sm.totalInput || 0) + (sm.totalOutput || 0);
-  const share = v => {
-    const p = v / all * 100;
-    return p > 0 && p < 1 ? '<1%' : `${Math.round(p)}%`;
-  };
-  $('tok-mix').textContent = all > 0
-    ? `Cache ${share(cache)} · Input ${share(sm.totalInput || 0)} · Output ${share(sm.totalOutput || 0)}`
-    : t('no-data');
+  const types = [
+    ['tok-input', sm.totalInput || 0],
+    ['tok-output', sm.totalOutput || 0],
+    ['tok-cache-read', sm.totalCacheRead || 0],
+    ['tok-cache-write', sm.totalCacheWrite || 0]
+  ];
+  const all = types.reduce((a, [, v]) => a + v, 0);
+  $('tok-types').innerHTML = types.map(([key, v]) => `<div class="tok-type">
+      <span class="label">${esc(t(key))}</span>
+      <span class="value">${fmtTokens(v)}</span>
+      <span class="share">${esc(pctText(all ? v / all : 0))}</span>
+    </div>`).join('');
+}
+
+function pctText(share) {
+  return share > 0 && share < 0.01 ? '<1%' : `${Math.round(share * 100)}%`;
+}
+
+// Active seconds -> "12 sa 48 dk" / "12h 48m"
+function fmtActive(sec) {
+  const mins = Math.round(sec / 60);
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return h > 0 ? t('reset-hm', { h, m }) : t('reset-m', { m });
+}
+
+function dayLabel(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  return `${dateLabel(date)} ${t('weekdays')[date.getDay()]}`;
+}
+
+function renderActivity(activity) {
+  const empty = `<span class="list-empty">${esc(t('no-data'))}</span>`;
+  const a = activity || {};
+  const count = n => n.toLocaleString(t('numLocale'));
+
+  // Time per project
+  const pt = a.projectTime || [];
+  $('project-time-list').innerHTML = pt.length ? pt.map(p => `<div class="project-row wide">
+      <span class="name" title="${esc(p.project_name)}">${esc(p.project_name || '—')}</span>
+      <div class="track"><div style="width:${p.activeSec / pt[0].activeSec * 100}%"></div></div>
+      <span class="cost">${esc(fmtActive(p.activeSec))}</span>
+    </div>`).join('') : empty;
+
+  // Models per project — one colour per model across all projects
+  const pm = (a.projectModels || []).filter(p => p.models.length);
+  const totals = new Map();
+  for (const p of pm) for (const m of p.models) {
+    const name = shortModel(m.model);
+    totals.set(name, (totals.get(name) || 0) + m.requests);
+  }
+  const order = [...totals].sort((x, y) => y[1] - x[1]).map(([name]) => name);
+  const colorOf = new Map(order.map((name, i) => [name, modelColors(order)[i]]));
+  $('project-models-list').innerHTML = pm.length ? pm.map(p => {
+    const merged = new Map();
+    for (const m of p.models) { const n = shortModel(m.model); merged.set(n, (merged.get(n) || 0) + m.requests); }
+    let list = [...merged].map(([name, requests]) => ({ name, requests })).sort((x, y) => y.requests - x.requests);
+    const total = list.reduce((s, m) => s + m.requests, 0);
+    if (list.length > 4) {
+      list = [...list.slice(0, 3), { name: t('other'), requests: list.slice(3).reduce((s, m) => s + m.requests, 0), other: true }];
+    }
+    const items = list.map(m => ({ ...m, color: m.other ? 'var(--text-4)' : colorOf.get(m.name), share: m.requests / total }));
+    return `<div class="pm-item">
+      <div class="pm-head"><span class="name">${esc(p.project_name)}</span><span class="count">${count(total)} ${esc(t('requests'))}</span></div>
+      <div class="stack-bar">${items.map(m => `<div style="width:${m.share * 100}%;background:${m.color}"></div>`).join('')}</div>
+      <div class="pm-legend">${items.map(m => `<span><i style="background:${m.color}"></i>${esc(m.name)} ${esc(pctText(m.share))}</span>`).join('')}</div>
+    </div>`;
+  }).join('') : empty;
+
+  // Longest sessions
+  const ls = a.longestSessions || [];
+  $('longest-sessions-list').innerHTML = ls.length ? ls.map(s => {
+    const date = s.first_timestamp ? dateLabel(new Date(s.first_timestamp)) : '';
+    return `<div class="session-row">
+      <div class="info">
+        <span class="name">${esc(s.project_name || '—')}</span>
+        <span class="sub">${esc([date, shortModel(s.model), `${count(s.turns || 0)} ${t('requests')}`].filter(Boolean).join(' · '))}</span>
+      </div>
+      <span class="dur">${esc(fmtActive(s.activeSec))}</span>
+    </div>`;
+  }).join('') : empty;
+
+  // Most active days
+  const ad = a.activeDays || [];
+  $('active-days-list').innerHTML = ad.length ? ad.map(d => `<div class="project-row wide">
+      <span class="name">${esc(dayLabel(d.day))}</span>
+      <div class="track" title="${esc(fmtTokens(d.tokens || 0) + ' ' + t('token-word'))}"><div style="width:${d.requests / ad[0].requests * 100}%"></div></div>
+      <span class="cost">${count(d.requests)} ${esc(t('requests'))}</span>
+    </div>`).join('') : empty;
 }
 
 function renderModelMix(all) {
