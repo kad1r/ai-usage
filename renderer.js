@@ -100,7 +100,7 @@ const I18N = {
     'no-limits': 'Bu provider limit verisi sunmuyor — yerel kullanım gösteriliyor.',
     'no-data': 'Bu dönem için veri yok.',
     'all-models': 'Tüm modeller', 'other': 'Diğer',
-    'period-total': 'Son {n} gün toplamı',
+    'period-total': 'Son {n} gün toplamı', 'all-time': 'Tümü', 'all-time-total': 'Tüm zamanların toplamı',
     'change': 'Önceki döneme göre {v} {w}.', 'up': 'arttı', 'down': 'azaldı',
     'connected': 'Bağlı', 'not-found': 'Bulunamadı',
     'hint-on': 'Yerel CLI oturumundan otomatik algılandı. Farklı bir hesap için API anahtarı girebilirsin.',
@@ -146,7 +146,7 @@ const I18N = {
     'no-limits': 'This provider has no limit data — showing local usage.',
     'no-data': 'No data for this period.',
     'all-models': 'All models', 'other': 'Other',
-    'period-total': 'Last {n} days total',
+    'period-total': 'Last {n} days total', 'all-time': 'All', 'all-time-total': 'All-time total',
     'change': '{v} {w} vs previous period.', 'up': 'up', 'down': 'down',
     'connected': 'Connected', 'not-found': 'Not found',
     'hint-on': 'Detected from the local CLI session. Enter an API key to use a different account.',
@@ -170,7 +170,9 @@ function applyStaticText() {
   document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
   document.querySelectorAll('[data-i18n-title]').forEach(el => { el.title = t(el.dataset.i18nTitle); });
   document.querySelectorAll('#interval-tabs button').forEach(b => { b.textContent = `${b.dataset.interval} ${t('min')}`; });
-  document.querySelectorAll('#period-tabs button').forEach(b => { b.textContent = `${b.dataset.period}${t('day-suffix')}`; });
+  document.querySelectorAll('#period-tabs button').forEach(b => {
+    b.textContent = b.dataset.period === '0' ? t('all-time') : `${b.dataset.period}${t('day-suffix')}`;
+  });
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -395,10 +397,11 @@ async function loadDetail() {
   const model = state.model;
   const q = f => window.electronAPI.getDetailedStats(f).then(r => (r.success ? r.data : null)).catch(() => null);
 
+  // days = 0 is "all time": no previous period to compare against
   const [all, filtered, twice] = await Promise.all([
     q({ provider, days }),
     model === 'all' ? null : q({ provider, days, model }),
-    q({ provider, days: days * 2, model })
+    days ? q({ provider, days: days * 2, model }) : null
   ]);
   state.detail = { key: `${provider}|${days}|${model}`, all, current: filtered || all, twice };
 }
@@ -740,23 +743,33 @@ async function renderDetail() {
   renderProjects(current);
 }
 
+const MAX_BARS = 45;
+
+// Days covered by the selected period; "all time" spans back to the first day with data
+function periodDays(rows) {
+  if (state.period > 0) return state.period;
+  const first = (rows || []).reduce((min, r) => (r.day && r.day < min ? r.day : min), dateKey(new Date()));
+  const [y, m, d] = first.split('-').map(Number);
+  return Math.max(7, Math.round((daysAgo(0) - new Date(y, m - 1, d)) / 86400000) + 1);
+}
+
+// Daily totals grouped into at most MAX_BARS buckets; the last bucket ends today
 function detailBars() {
-  let vals = dailyTotals(state.detail.current?.dailyRows, state.period);
-  let step = 1;
-  if (state.period === 90) {
-    const g = [];
-    for (let i = 0; i < vals.length; i += 2) g.push(vals[i] + (vals[i + 1] || 0));
-    vals = g;
-    step = 2;
-  }
-  return { vals, step };
+  const rows = state.detail.current?.dailyRows;
+  const days = periodDays(rows);
+  const daily = dailyTotals(rows, days);
+  const step = Math.max(1, Math.ceil(days / MAX_BARS));
+  const padded = [...new Array((step - (days % step)) % step).fill(0), ...daily];
+  const vals = [];
+  for (let i = 0; i < padded.length; i += step) vals.push(padded.slice(i, i + step).reduce((a, b) => a + b, 0));
+  return { vals, step, days };
 }
 
 function renderDailyBars(current, twice) {
   const { vals, step } = detailBars();
   const total = vals.reduce((a, b) => a + b, 0);
   const hv = state.barHover >= 0 && state.barHover < vals.length ? state.barHover : -1;
-  const back = i => (vals.length - 1 - i) * step;
+  const back = i => (vals.length - 1 - i) * step; // days ago at the end of bucket i
 
   const bars = $('daily-bars');
   bars.innerHTML = barsHtml(vals, hv);
@@ -764,15 +777,15 @@ function renderDailyBars(current, twice) {
 
   $('tok-big').textContent = fmtTokens(hv >= 0 ? vals[hv] : total);
   $('tok-sub').textContent = hv >= 0
-    ? (step === 2 ? `${dateLabel(daysAgo(back(hv) + 1))} – ${dateLabel(daysAgo(back(hv)))}` : dateLabel(daysAgo(back(hv))))
-    : t('period-total', { n: state.period });
+    ? (step > 1 ? `${dateLabel(daysAgo(back(hv) + step - 1))} – ${dateLabel(daysAgo(back(hv)))}` : dateLabel(daysAgo(back(hv))))
+    : (state.period ? t('period-total', { n: state.period }) : t('all-time-total'));
 
   const labels = [];
   for (let i = 0; i < 5; i++) labels.push(dateLabel(daysAgo(back(Math.round(i * (vals.length - 1) / 4)))));
   $('daily-bar-labels').innerHTML = labels.map(l => `<span>${esc(l)}</span>`).join('');
 
-  // Change vs previous period of equal length
-  const prev = dailyTotals(twice?.dailyRows, state.period, state.period).reduce((a, b) => a + b, 0);
+  // Change vs previous period of equal length (none for "all time")
+  const prev = state.period ? dailyTotals(twice?.dailyRows, state.period, state.period).reduce((a, b) => a + b, 0) : 0;
   const chEl = $('tok-change');
   if (prev > 0 && total > 0) {
     const ch = Math.round((total / prev - 1) * 100);
