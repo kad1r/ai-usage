@@ -12,7 +12,7 @@ const CursorProvider = require('./providers/cursor');
 let tray = null;
 let mainWindow = null;
 
-const DATA_DIR = path.join(app.getPath('userData'), 'claude-usage');
+const DATA_DIR = path.join(app.getPath('userData'), 'data');
 const HISTORY_PATH = path.join(DATA_DIR, 'history.json');
 const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
 
@@ -25,6 +25,50 @@ const USERINFO_URL = 'https://api.anthropic.com/api/oauth/userinfo';
 function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+}
+
+// ─── Migration from "Claude Usage" (≤ 1.3.x) ──────────────────────────────────
+// The app was renamed to "AI Usage" in 1.4.0, which moved its user-data folder
+// (%APPDATA%\claude-usage-app -> %APPDATA%\ai-usage) and its install path.
+const LEGACY_USER_DATA = path.join(app.getPath('appData'), 'claude-usage-app');
+const LEGACY_EXE = path.join(process.env.LOCALAPPDATA || '', 'Programs', 'claude-usage-app', 'Claude Usage.exe');
+
+// Copies history, usage cache, settings and renderer preferences on first run.
+// The legacy folder is left in place.
+function migrateLegacyData() {
+  const legacyData = path.join(LEGACY_USER_DATA, 'claude-usage');
+  if (fs.existsSync(DATA_DIR) || !fs.existsSync(legacyData)) return;
+
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  for (const entry of fs.readdirSync(legacyData, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    try {
+      fs.copyFileSync(path.join(legacyData, entry.name), path.join(DATA_DIR, entry.name));
+    } catch (e) {
+      console.warn('[migrate] could not copy', entry.name, e.message);
+    }
+  }
+
+  // Theme, language, refresh interval and alert state live in Local Storage
+  const legacyStorage = path.join(LEGACY_USER_DATA, 'Local Storage');
+  const storage = path.join(app.getPath('userData'), 'Local Storage');
+  if (fs.existsSync(legacyStorage) && !fs.existsSync(storage)) {
+    try {
+      fs.cpSync(legacyStorage, storage, { recursive: true });
+    } catch (e) {
+      console.warn('[migrate] could not copy Local Storage:', e.message);
+    }
+  }
+  console.log('[migrate] copied data from', LEGACY_USER_DATA);
+}
+
+// Launch-at-login points at the old exe; move it to the new one if it was on
+function migrateLegacyLoginItem() {
+  if (!app.isPackaged || process.platform !== 'win32') return;
+  if (app.getLoginItemSettings().openAtLogin) return;
+  if (app.getLoginItemSettings({ path: LEGACY_EXE }).openAtLogin) {
+    app.setLoginItemSettings({ openAtLogin: true });
   }
 }
 
@@ -272,11 +316,13 @@ if (!gotInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', () => createWindow());
+  migrateLegacyData();
 }
 
 app.whenReady().then(() => {
   if (!gotInstanceLock) return;
   app.dock?.hide?.();
+  migrateLegacyLoginItem();
 
   // ClaudeProvider.isAvailable() checks if the credentials file exists
   const claudeProvider = new ClaudeProvider(CLAUDE_CODE_CREDENTIALS_PATH, HISTORY_PATH);
@@ -291,7 +337,7 @@ app.whenReady().then(() => {
 
   const icon = createTrayIcon();
   tray = new Tray(icon);
-  tray.setToolTip('Claude Usage');
+  tray.setToolTip('AI Usage');
 
   tray.on('click', () => {
     if (mainWindow && mainWindow.isVisible()) {

@@ -1,6 +1,8 @@
-# Claude Usage
+# AI Usage
 
-A lightweight Windows system tray application that tracks your AI usage across multiple providers in real time.
+A lightweight Windows system tray application that tracks your AI coding tool usage — Claude, Codex, Gemini and Cursor — in real time.
+
+> Formerly **Claude Usage**. Renamed in 1.4.0 since it's no longer Claude-only; upgrading keeps your data (see [Installation](#installation)).
 
 ![Electron](https://img.shields.io/badge/Electron-41-47848F?logo=electron&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white)
@@ -68,20 +70,20 @@ A lightweight Windows system tray application that tracks your AI usage across m
 
 ### Download & Install (Recommended)
 
-1. Download the latest **`Claude Usage Setup x.y.z.exe`** from the [Releases](../../releases) page
+1. Download the latest **`AI Usage Setup x.y.z.exe`** from the [Releases](../../releases) page
 2. Run the installer — it will install and launch automatically
 3. Look for the icon in your **system tray** (bottom-right of your taskbar)
 
 > No admin rights required. The app installs to your user profile.
 >
-> **Upgrading from 1.2.x or older:** quit the running app from the tray (**right-click → Quit**) before installing.
+> **Upgrading from Claude Usage (1.3.x or older):** quit the running app from the tray (**right-click → Quit**), then install. The installer replaces the old app, and on first start AI Usage copies your history, settings and preferences from `%APPDATA%\claude-usage-app` (the old folder is left in place) and keeps *Launch at Windows startup* on if it was.
 
 ### Build from Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/kad1r/claude-usage-widget.git
-cd claude-usage-widget
+git clone https://github.com/kad1r/ai-usage.git
+cd ai-usage
 
 # Install dependencies
 npm install
@@ -96,7 +98,7 @@ npm start
 npm run build
 ```
 
-The installer will be generated at `dist/Claude Usage Setup <version>.exe`.
+The installer will be generated at `dist/AI Usage Setup <version>.exe`.
 
 ---
 
@@ -157,7 +159,7 @@ Scans local session logs written by each tool (Claude Code's `~/.claude/projects
 ## Project Structure
 
 ```
-claude-usage-widget/
+ai-usage/
 ├── main.js              # Electron main process (tray, IPC, usage cache, history)
 ├── preload.js           # Secure IPC bridge between main and renderer
 ├── renderer.js          # UI: views, SVG charts, settings, i18n, themes
@@ -183,8 +185,8 @@ claude-usage-widget/
 - **API:** Anthropic usage endpoint (`api.anthropic.com`)
 - **Local storage:**
   - `~/.claude/usage.db` — Parsed session data from all providers (SQLite, `better-sqlite3`)
-  - `%APPDATA%\claude-usage-app\claude-usage\history.json` — Utilisation data points (last 30 days)
-  - `%APPDATA%\claude-usage-app\claude-usage\usage-cache.json` — Last usage response
+  - `%APPDATA%\ai-usage\data\history.json` — Utilisation data points (last 30 days)
+  - `%APPDATA%\ai-usage\data\usage-cache.json` — Last usage response
   - Optional provider API keys are encrypted with `safeStorage` (Windows DPAPI)
 - **Reliability:** Atomic JSON writes, unreadable history is kept aside as `history.corrupt-<timestamp>.json`, single-instance lock
 - **Security:** Context isolation, no `nodeIntegration`, strict Content Security Policy (no remote scripts or fonts)
