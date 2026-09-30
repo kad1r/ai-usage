@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.5.0] - 2026-09-30
 
 ### Fixed
 - **Codex and Cursor costs** — OpenAI models were priced as Claude Sonnet; every model now uses its own provider's price list (`providers/pricing.js`), with Gemini and OpenAI prices updated to the current published rates
