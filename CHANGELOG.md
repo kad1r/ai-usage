@@ -1,9 +1,24 @@
 # Changelog
 
-All notable changes to Claude Usage will be documented in this file.
+All notable changes to AI Usage (formerly Claude Usage) will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [1.4.0] - 2026-09-30
+
+### Changed
+- **Renamed from "Claude Usage" to "AI Usage"** — the app tracks Claude, Codex, Gemini and Cursor, not just Claude
+  - Installer, shortcut, exe and tray tooltip are now "AI Usage" (`AI Usage Setup 1.4.0.exe`)
+  - Data folder `%APPDATA%\ai-usage\data`; new installs go to `%LOCALAPPDATA%\Programs\ai-usage` (upgrades keep the existing install folder)
+  - GitHub repository renamed to `kad1r/ai-usage` (the old URL redirects)
+
+### Upgrading from 1.3.x or older
+- The installer keeps the same app id, so it replaces the old "Claude Usage" install instead of installing alongside it
+- On first start, history, usage cache, settings and preferences (theme, language, refresh interval) are copied from `%APPDATA%\claude-usage-app`; the old folder is left in place and can be deleted afterwards
+- *Launch at Windows startup* stays on if it was enabled for the old app
 
 ---
 
@@ -207,8 +222,9 @@ The first public release of Claude Usage — a Windows system tray app for track
 
 ---
 
-[1.3.1]: https://github.com/kad1r/claude-usage-widget/compare/v1.3.0...v1.3.1
-[1.3.0]: https://github.com/kad1r/claude-usage-widget/compare/v1.2.0...v1.3.0
-[1.2.0]: https://github.com/kad1r/claude-usage-widget/compare/v1.1.0...v1.2.0
-[1.1.0]: https://github.com/kad1r/claude-usage-widget/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/kad1r/claude-usage-widget/releases/tag/release
+[1.4.0]: https://github.com/kad1r/ai-usage/compare/v1.3.1...v1.4.0
+[1.3.1]: https://github.com/kad1r/ai-usage/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/kad1r/ai-usage/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/kad1r/ai-usage/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/kad1r/ai-usage/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/kad1r/ai-usage/releases/tag/release

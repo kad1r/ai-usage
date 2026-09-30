@@ -1,6 +1,6 @@
 {
   "name": "ai-usage",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "AI coding tool usage tracker (Claude, Codex, Gemini, Cursor) - System Tray App",
   "license": "MIT",
   "main": "main.js",
