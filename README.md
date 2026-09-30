@@ -20,15 +20,18 @@ A lightweight Windows system tray application that tracks your AI usage across m
 - **Limit gauges** — Claude's 5-hour and weekly limits as arc gauges, with a status pill (Relaxed / Watch / Critical) and time until reset
 - **Plan badge** — Your subscription plan (e.g. `Max 20x`) read from your Claude Code session
 - **Weekly projection** — Estimates where the weekly limit will land at reset, or how soon it fills up at your current pace
+- **Most used models** — Top model and request share per model over the last 7 days
 - **7-day chart** — Weekly and 5-hour utilisation over the past week, with a hover tooltip
 - **Provider tabs** — Switch between Claude and any detected provider; each tab shows its peak utilisation
 
 ### Detailed
-- **7 / 30 / 90-day periods** and a **model filter**
+- **7 / 30 / 90-day or all-time periods** and a **model filter**
 - **KPIs** — Estimated cost, sessions and turns for the period
-- **Daily token bars** — Hover for a single day; change vs the previous period; cache / input / output mix
+- **Daily token bars** — Hover for a single day; change vs the previous period
+- **Token types** — Input, output, cache read and cache write amounts
 - **Model mix** — Token share per model
 - **Top projects** — Ranked by estimated cost
+- **Time per project**, **models used in each project**, **longest sessions** and **most active days** — durations are active time (breaks over 30 minutes are not counted)
 
 ### Multi-Provider (Local Scan)
 - **Codex** — Scans OpenAI Codex CLI session logs from `~/.codex/`

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.1] - 2026-09-30
+
+### Added
+- **Most used models** card on the Overview — the top model and each model's share of requests over the last 7 days, for the selected provider. Share is by requests (turns): token share is dominated by cache reads, so it would overstate models with long cached contexts
+- **"All" period** in the Detailed view (back from the pre-1.3.0 UI) — daily token bars are grouped into at most 45 buckets, with the date range shown on hover
+- **Activity insights** in the Detailed view, for the selected period, provider and model:
+  - Token types — input, output, cache read and cache write amounts with their share
+  - Most time spent per project
+  - Models used in each project (counted per request)
+  - Longest sessions, with project, date, model and request count
+  - Most active days by request count
+- Durations are **active time**: gaps between requests up to 30 minutes are summed and longer gaps count as breaks, since sessions are often resumed hours or days later. Subagent sessions run in parallel with their parent, so they're left out of time totals (they still count towards requests and models)
+
+### Fixed
+- **Gemini usage missing since late April** — Gemini CLI now writes sessions as `.jsonl`, which the scanner didn't read. Both formats are parsed; messages that the CLI re-appends on update are counted once. Already-scanned files are re-read once with the corrected maths
+- **Gemini token counts** — cached tokens were counted twice (Gemini's `input` already includes them) and thinking tokens were not counted; they are now billed as output
+- **Cost estimates were too low** — Opus 4.8, Opus 5, Opus 5.5, Sonnet 5 and Fable models were missing from the price table and fell back to Sonnet prices; Opus 4.6/4.5 and Haiku 4.5 had outdated prices. The table now follows the official pricing page, including the lower cache-read rates of Opus 5.5 and Fable 5.1
+- **Wrong project names** — subagent transcripts were all filed under a "subagents" project, and hyphenated or spaced names were cut to their last word ("Cts Ai Devs" → "Devs"). Names now come from the working directory recorded in each transcript; existing sessions are renamed once on the first scan, without re-scanning
+- Dated model ids (e.g. `claude-haiku-4-5-20251001`) now use their model's price; Claude Code's `<synthetic>` entries cost nothing and are hidden from model lists; Gemini sessions are priced with Gemini rates instead of Claude's
+
+---
+
 ## [1.3.0] - 2026-09-29
 
 ### Added
@@ -185,6 +207,7 @@ The first public release of Claude Usage — a Windows system tray app for track
 
 ---
 
+[1.3.1]: https://github.com/kad1r/claude-usage-widget/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/kad1r/claude-usage-widget/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/kad1r/claude-usage-widget/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/kad1r/claude-usage-widget/compare/v1.0.0...v1.1.0
