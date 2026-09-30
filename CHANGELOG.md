@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.0] - 2026-09-30
+
+### Fixed
+- **Codex and Cursor costs** — OpenAI models were priced as Claude Sonnet; every model now uses its own provider's price list (`providers/pricing.js`), with Gemini and OpenAI prices updated to the current published rates
+- **Codex scanner** — reads the rollout format Codex CLI actually writes (`token_count` events in `~/.codex/sessions/`), so Codex sessions now show up; 5-hour and weekly limits come from the latest rate-limit snapshot instead of a non-existent `codex usage` command
+- **Cursor scanner** — reads chats from Cursor's `state.vscdb` (with the workspace as project name) instead of looking for JSON files Cursor doesn't write
+- **Usage request could hang forever** — the Anthropic request now times out after 15 s; on network errors, timeouts and 5xx the last known values are shown (marked stale) instead of an error
+- Messages without their own timestamp no longer get the scan time (Codex, Gemini, Cursor), which moved them on every re-scan
+
+### Changed
+- **Local scanning runs in a background utility process** — large transcripts no longer freeze the tray or window; only one scan runs at a time
+- **Claude transcripts are read incrementally** — only bytes appended since the last scan are parsed
+- Codex/Gemini/Cursor scans write each session in one transaction
+- The usage database moved from `~/.claude/usage.db` to `%APPDATA%\ai-usage\data\usage.db` (copied once on first start; the old file stays)
+- History is kept in memory in the main process and loaded once by the window, instead of being re-read on every refresh
+- Provider detection checks local folders only; the app no longer runs `codex`/`gemini` commands
+- Error messages from the main process are translated in the UI (Turkish/English)
+
+### Removed
+- **Provider API key field** — keys were stored but never used; the stored keys are deleted from the database on upgrade
+
+### Security
+- Renderer runs sandboxed; navigation and new windows are blocked
+- History data points from the renderer are validated before being written
+
+### Added
+- `npm test` — node:test suites for pricing, all four scanners, the database migration and stats
+
 ## [1.4.0] - 2026-09-30
 
 ### Changed

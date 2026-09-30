@@ -44,9 +44,9 @@ A lightweight Windows system tray application that tracks your AI coding tool us
 <p align="center"><sub>Detailed view (last 30 days) — project names blurred</sub></p>
 
 ### Multi-Provider (Local Scan)
-- **Codex** — Scans OpenAI Codex CLI session logs from `~/.codex/`
+- **Codex** — Scans OpenAI Codex CLI rollout logs from `~/.codex/sessions/`; 5-hour and weekly limits come from the rate-limit snapshot in the newest session
 - **Gemini** — Scans Google Gemini CLI chat sessions from `~/.gemini/tmp/`
-- **Cursor** — Scans Cursor data from `%APPDATA%\Cursor`
+- **Cursor** — Reads chats from Cursor's `state.vscdb` in `%APPDATA%\Cursor\User` (undocumented format; some Cursor versions don't record token counts)
 - Providers without a limit API show their local token usage instead of gauges
 
 ### App
@@ -94,6 +94,9 @@ npx electron-rebuild
 # Run in development mode
 npm start
 
+# Run the tests (uses Electron's Node, like the app)
+npm test
+
 # Build the installer
 npm run build
 ```
@@ -114,7 +117,7 @@ Other providers (Codex, Gemini, Cursor) are detected automatically from local fi
 | Control | Location | Description |
 |---------|----------|-------------|
 | Refresh | Top-right ↻ | Refresh usage data now |
-| Settings | Top-right ⚙ (or `+` next to the provider tabs) | Providers & API keys, theme, language, refresh interval, limit alert, launch at startup |
+| Settings | Top-right ⚙ (or `+` next to the provider tabs) | Providers, theme, language, refresh interval, limit alert, launch at startup |
 | Menu | Top-right ⋮ | Settings / Quit app |
 | Provider tabs | Below the header | Switch provider |
 | Overview / Detailed | Below the provider tabs | Switch view |
@@ -133,7 +136,7 @@ Other providers (Codex, Gemini, Cursor) are detected automatically from local fi
 Reads the OAuth session that Claude Code stores in `~/.claude/.credentials.json` and queries the Anthropic usage endpoint for your 5-hour and weekly limits. The usage endpoint is rate limited per session (shared with Claude Code itself), so responses are cached for 2 minutes and `Retry-After` is honoured — while rate limited the app keeps showing the last known data.
 
 ### Local usage (all providers)
-Scans local session logs written by each tool (Claude Code's `~/.claude/projects/`, Codex, Gemini, Cursor) every 5 minutes. No network requests — all data stays on your machine. A SQLite database stores the parsed sessions for the Detailed view; costs are estimates based on published token prices.
+Scans local session logs written by each tool (Claude Code's `~/.claude/projects/`, Codex, Gemini, Cursor) every 5 minutes in a background utility process, so the tray and window stay responsive. Claude transcripts are read incrementally (only the bytes added since the last scan). No network requests — all data stays on your machine. A SQLite database stores the parsed sessions for the Detailed view; costs are estimates based on published token prices.
 
 ### Data Displayed
 
@@ -161,18 +164,22 @@ Scans local session logs written by each tool (Claude Code's `~/.claude/projects
 ```
 ai-usage/
 ├── main.js              # Electron main process (tray, IPC, usage cache, history)
+├── scan-worker.js       # Utility process that runs the local scanners
+├── db.js                # SQLite schema and migrations
+├── stats.js             # Detailed view queries
 ├── preload.js           # Secure IPC bridge between main and renderer
 ├── renderer.js          # UI: views, SVG charts, settings, i18n, themes
 ├── index.html           # Application markup
 ├── styles.css           # Styling, dark/light theme tokens
 ├── fonts/               # Bundled Inter and Roboto Mono
-├── scanner.js           # Shim to providers/claude/scanner.js
 ├── icon.ico             # Application icon
 ├── package.json         # Dependencies and build configuration
+├── test/                # node:test suites (npm test)
 └── providers/
     ├── registry.js      # Provider registry singleton
     ├── base.js          # BaseProvider abstract class
-    ├── claude/          # Claude provider + session scanner / SQLite queries
+    ├── pricing.js       # Token prices for Claude, OpenAI and Gemini models
+    ├── claude/          # Claude provider + session scanner
     ├── codex/           # OpenAI Codex CLI scanner
     ├── gemini/          # Google Gemini CLI scanner
     └── cursor/          # Cursor scanner
@@ -184,12 +191,11 @@ ai-usage/
 - **Auth:** Uses Claude Code's existing session — the app stores no Claude credentials of its own
 - **API:** Anthropic usage endpoint (`api.anthropic.com`)
 - **Local storage:**
-  - `~/.claude/usage.db` — Parsed session data from all providers (SQLite, `better-sqlite3`)
+  - `%APPDATA%\ai-usage\data\usage.db` — Parsed session data from all providers (SQLite, `better-sqlite3`); copied once from `~/.claude/usage.db` when upgrading from 1.4 or older
   - `%APPDATA%\ai-usage\data\history.json` — Utilisation data points (last 30 days)
   - `%APPDATA%\ai-usage\data\usage-cache.json` — Last usage response
-  - Optional provider API keys are encrypted with `safeStorage` (Windows DPAPI)
 - **Reliability:** Atomic JSON writes, unreadable history is kept aside as `history.corrupt-<timestamp>.json`, single-instance lock
-- **Security:** Context isolation, no `nodeIntegration`, strict Content Security Policy (no remote scripts or fonts)
+- **Security:** Context isolation, sandboxed renderer, no `nodeIntegration`, navigation and new windows blocked, strict Content Security Policy (no remote scripts or fonts)
 - **Build:** electron-builder with NSIS installer, `asarUnpack` for the native SQLite module
 
 ---

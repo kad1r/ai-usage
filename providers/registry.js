@@ -19,19 +19,6 @@ class ProviderRegistry {
     return this._providers.find(p => p.id === id) || null;
   }
 
-  /**
-   * Returns all providers for which isAvailable() resolves true.
-   * WARNING: calls isAvailable() on every registered provider (filesystem/CLI
-   * checks). Do NOT call this in a hot path — invoke once and cache the result.
-   * @returns {Promise<BaseProvider[]>}
-   */
-  async getActive() {
-    const results = await Promise.all(
-      this._providers.map(async p => ({ p, available: await p.isAvailable() }))
-    );
-    return results.filter(r => r.available).map(r => r.p);
-  }
-
   async fetchAllQuotas() {
     return Promise.all(this._providers.map(p => p.fetchQuota().catch(err => ({
       provider: p.id,
