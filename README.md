@@ -77,6 +77,8 @@ A lightweight Windows system tray application that tracks your AI coding tool us
 > No admin rights required. The app installs to your user profile.
 >
 > **Upgrading from Claude Usage (1.3.x or older):** quit the running app from the tray (**right-click → Quit**), then install. The installer replaces the old app, and on first start AI Usage copies your history, settings and preferences from `%APPDATA%\claude-usage-app` (the old folder is left in place) and keeps *Launch at Windows startup* on if it was.
+>
+> **Upgrading from 1.4.x:** quit the app from the tray, then install. On first start the usage database is copied from `~/.claude/usage.db` to `%APPDATA%\ai-usage\data\usage.db`, including sessions whose transcripts Claude Code has already deleted. The old file is left in place; once the app shows your history you can delete `~/.claude/usage.db` (and its `-wal` / `-shm` files).
 
 ### Build from Source
 
@@ -209,7 +211,8 @@ ai-usage/
 | Session expired | Run `claude login` again — the app follows Claude Code's session |
 | "Updated … ago · cached" in the header | The usage API is rate limiting; the app shows the last known data and retries automatically |
 | Tray icon missing after restart | Enable **Launch at Windows startup** in Settings |
-| Gemini/Codex shows no data | Ensure you have used the respective CLI tool and sessions exist in `~/.gemini/` or `~/.codex/` |
+| Gemini/Codex shows no data | Ensure you have used the respective CLI tool and sessions exist in `~/.gemini/tmp/` or `~/.codex/sessions/` |
+| Cursor shows no data | Some Cursor versions don't record token counts for chats; those chats can't be counted. The app reads `%APPDATA%\Cursor\User\globalStorage\state.vscdb` |
 
 ---
 
