@@ -110,10 +110,67 @@ function openDb() {
   return db;
 }
 
+// Fallback when a transcript has no `cwd`: the encoded folder directly under
+// ~/.claude/projects (subagent transcripts live deeper, in <session>/subagents/).
+// The encoding turns every separator into "-", so hyphenated names can't be
+// recovered exactly — prefer projectNameFromCwd.
 function projectNameFromPath(filePath) {
-  const parts = filePath.split(path.sep);
-  const projectDir = parts[parts.length - 2] || 'unknown';
-  return projectDir.replace(/^-/, '').replace(/-/g, '/').split('/').pop() || projectDir;
+  const rel = path.relative(CLAUDE_PROJECTS_DIR, filePath).split(path.sep);
+  const projectDir = rel.length > 1 ? rel[0] : 'unknown';
+  const parts = projectDir.split('-').filter(Boolean);
+  if (!parts.length) return projectDir;
+  const last = parts[parts.length - 1];
+  // A bare version suffix ("HabasLiman-2", "Site-v2") belongs to the name
+  return /^v?\d+$/i.test(last) && parts.length > 1 ? `${parts[parts.length - 2]}-${last}` : last;
+}
+
+// "D:\Development\Cts Ai Devs" -> "Cts Ai Devs"
+function projectNameFromCwd(cwd) {
+  return cwd ? cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || null : null;
+}
+
+// First `cwd` in a transcript, reading only its beginning
+function readCwd(filePath) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(64 * 1024);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const m = buf.toString('utf8', 0, n).match(/"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    return m ? JSON.parse(`"${m[1]}"`) : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+// One-time fix for rows stored before project names came from `cwd`
+// (subagent transcripts were filed under a "subagents" project and
+// hyphenated names were truncated). Updates names without re-scanning.
+function migrateProjectNames(db) {
+  db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)');
+  if (db.prepare("SELECT value FROM meta WHERE key = 'project_names_v2'").get()) return;
+
+  const update = db.prepare("UPDATE sessions SET project_name = ? WHERE session_id = ? AND provider = 'claude'");
+  const files = db.prepare('SELECT path FROM processed_files').all()
+    .map(r => r.path)
+    .filter(p => p.startsWith(CLAUDE_PROJECTS_DIR) && p.endsWith('.jsonl'));
+
+  // Claude Code deletes old transcripts, so many processed files are gone.
+  // Learn each encoded project folder's real name from files that still exist.
+  const topDir = f => path.relative(CLAUDE_PROJECTS_DIR, f).split(path.sep)[0];
+  const cwdName = new Map(files.map(f => [f, projectNameFromCwd(readCwd(f))]));
+  const dirName = new Map();
+  for (const [f, name] of cwdName) if (name && !dirName.has(topDir(f))) dirName.set(topDir(f), name);
+
+  db.transaction(() => {
+    for (const file of files) {
+      const name = cwdName.get(file) || dirName.get(topDir(file)) || projectNameFromPath(file);
+      update.run(name, sessionIdFromPath(file));
+    }
+    db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('project_names_v2', ?)").run(new Date().toISOString());
+  })();
 }
 
 function sessionIdFromPath(filePath) {
@@ -135,7 +192,13 @@ function scanFile(db, filePath) {
     const lines = content.split('\n').filter(l => l.trim());
 
     const sessionId = sessionIdFromPath(filePath);
-    const projectName = projectNameFromPath(filePath);
+    let cwd = null;
+    for (const line of lines) {
+      if (!line.includes('"cwd"')) continue;
+      try { cwd = JSON.parse(line).cwd || null; } catch {}
+      if (cwd) break;
+    }
+    const projectName = projectNameFromCwd(cwd) || projectNameFromPath(filePath);
 
     let firstTimestamp = null;
     let lastTimestamp = null;
@@ -219,6 +282,7 @@ function scan() {
   let scanned = 0;
 
   try {
+    migrateProjectNames(db);
     const files = getAllJsonlFiles(CLAUDE_PROJECTS_DIR);
     for (const file of files) {
       try {
@@ -342,6 +406,7 @@ function getAvailableModels() {
 // scanAndStore is an alias for scan (used by ClaudeProvider.scanLocal)
 function scanAndStore(db) {
   if (!fs.existsSync(CLAUDE_PROJECTS_DIR)) return { scanned: 0, error: null };
+  migrateProjectNames(db);
 
   let scanned = 0;
   const files = getAllJsonlFiles(CLAUDE_PROJECTS_DIR);
@@ -356,4 +421,4 @@ function scanAndStore(db) {
   return { scanned, error: null };
 }
 
-module.exports = { scan, scanAndStore, queryStats, openDb, getAvailableModels, PRICING, calcCost, pricingFor };
+module.exports = { scan, scanAndStore, queryStats, openDb, getAvailableModels, PRICING, calcCost, pricingFor, migrateProjectNames, projectNameFromCwd };
