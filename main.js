@@ -254,31 +254,43 @@ async function getUsage() {
 }
 
 // ─── Local scan ───────────────────────────────────────────────────────────────
+// The scanner utility process is started once and reused for every scan.
+// Starting a new process each time made antivirus software (AVG/Avast) inspect
+// the exe every 5 minutes. It is only restarted if it exits or hangs.
 // One scan at a time; callers arriving meanwhile share the running one.
 const SCAN_TIMEOUT_MS = 10 * 60 * 1000;
+let scanner = null;       // the utility process
 let scanInFlight = null;
+
+function getScanner() {
+  if (scanner) return scanner;
+  const child = utilityProcess.fork(path.join(__dirname, 'scan-worker.js'), [], {
+    serviceName: 'AI Usage Scanner',
+    stdio: 'inherit'
+  });
+  child.on('exit', code => {
+    if (scanner === child) scanner = null;
+    child.emit('scan-done', { error: `scanner exited with code ${code}` });
+  });
+  child.on('message', msg => child.emit('scan-done', msg?.results || {}));
+  return (scanner = child);
+}
 
 function runScan() {
   if (scanInFlight) return scanInFlight;
   scanInFlight = new Promise(resolve => {
-    const child = utilityProcess.fork(path.join(__dirname, 'scan-worker.js'), [], {
-      serviceName: 'AI Usage Scanner',
-      stdio: 'inherit'
-    });
-    let done = false;
+    const child = getScanner();
     const finish = results => {
-      if (done) return;
-      done = true;
       clearTimeout(timer);
-      child.kill();
+      child.removeListener('scan-done', finish);
       resolve(results);
     };
     const timer = setTimeout(() => {
-      console.error('[scan] timed out');
+      console.error('[scan] timed out, restarting the scanner');
       finish({ error: 'timeout' });
+      child.kill();
     }, SCAN_TIMEOUT_MS);
-    child.once('message', msg => finish(msg?.results || {}));
-    child.once('exit', code => finish({ error: `scanner exited with code ${code}` }));
+    child.on('scan-done', finish);
     child.postMessage({ dbPath: DB_PATH, providers: registry.getAll().map(p => p.id) });
   }).finally(() => { scanInFlight = null; });
   return scanInFlight;
@@ -496,6 +508,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => {
+  scanner?.kill();
   db?.close();
   db = null;
 });

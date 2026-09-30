@@ -1,6 +1,7 @@
 // scan-worker.js — runs the local scanners in an Electron utility process, so
 // reading large transcripts never blocks the main process (tray, IPC).
-// Receives { dbPath, providers: [id] } and replies { results }.
+// Long-lived: main starts it once and sends { dbPath, providers: [id] } for
+// each scan; every request gets one { results } reply.
 const { openDb } = require('./db');
 
 const SCANNERS = {
@@ -10,12 +11,12 @@ const SCANNERS = {
   cursor: () => require('./providers/cursor/scanner')
 };
 
-process.parentPort.once('message', ({ data }) => {
+function scan({ dbPath, providers }) {
   const results = {};
   let db;
   try {
-    db = openDb(data.dbPath);
-    for (const id of data.providers) {
+    db = openDb(dbPath);
+    for (const id of providers) {
       const load = SCANNERS[id];
       if (!load) continue;
       try {
@@ -31,6 +32,9 @@ process.parentPort.once('message', ({ data }) => {
   } finally {
     db?.close();
   }
-  // The parent stops this process once the reply arrives
-  process.parentPort.postMessage({ results });
+  return results;
+}
+
+process.parentPort.on('message', ({ data }) => {
+  process.parentPort.postMessage({ results: scan(data) });
 });
