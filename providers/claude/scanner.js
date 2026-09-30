@@ -6,18 +6,42 @@ const Database = require('better-sqlite3');
 const DB_PATH = path.join(os.homedir(), '.claude', 'usage.db');
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
-// Token pricing per million tokens (USD)
+const geminiScanner = require('../gemini/scanner');
+
+// Token pricing per million tokens (USD), Anthropic first-party API.
+// Source: https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-09-30)
+// cacheWrite is the 5-minute write (1.25x input); cacheRead is 0.1x input except
+// Opus 5.5 (0.05x) and Fable 5.1 (0.025x).
 const PRICING = {
-  'claude-opus-4-6':    { input: 15,   output: 75,  cacheRead: 1.5,   cacheWrite: 18.75 },
-  'claude-opus-4-5':    { input: 15,   output: 75,  cacheRead: 1.5,   cacheWrite: 18.75 },
-  'claude-sonnet-4-6':  { input: 3,    output: 15,  cacheRead: 0.3,   cacheWrite: 3.75  },
-  'claude-sonnet-4-5':  { input: 3,    output: 15,  cacheRead: 0.3,   cacheWrite: 3.75  },
-  'claude-haiku-4-5':   { input: 0.8,  output: 4,   cacheRead: 0.08,  cacheWrite: 1.0   },
+  'claude-fable-5-1':   { input: 10,  output: 50, cacheRead: 0.25, cacheWrite: 12.5  },
+  'claude-fable-5':     { input: 10,  output: 50, cacheRead: 1,    cacheWrite: 12.5  },
+  'claude-opus-5-5':    { input: 4,   output: 20, cacheRead: 0.2,  cacheWrite: 5     },
+  'claude-opus-5':      { input: 5,   output: 25, cacheRead: 0.5,  cacheWrite: 6.25  },
+  'claude-opus-4-8':    { input: 5,   output: 25, cacheRead: 0.5,  cacheWrite: 6.25  },
+  'claude-opus-4-7':    { input: 5,   output: 25, cacheRead: 0.5,  cacheWrite: 6.25  },
+  'claude-opus-4-6':    { input: 5,   output: 25, cacheRead: 0.5,  cacheWrite: 6.25  },
+  'claude-opus-4-5':    { input: 5,   output: 25, cacheRead: 0.5,  cacheWrite: 6.25  },
+  'claude-opus-4-1':    { input: 15,  output: 75, cacheRead: 1.5,  cacheWrite: 18.75 },
+  'claude-opus-4':      { input: 15,  output: 75, cacheRead: 1.5,  cacheWrite: 18.75 },
+  'claude-sonnet-5-5':  { input: 2,   output: 10, cacheRead: 0.2,  cacheWrite: 2.5   },
+  'claude-sonnet-5':    { input: 2,   output: 10, cacheRead: 0.2,  cacheWrite: 2.5   },
+  'claude-sonnet-4-6':  { input: 3,   output: 15, cacheRead: 0.3,  cacheWrite: 3.75  },
+  'claude-sonnet-4-5':  { input: 3,   output: 15, cacheRead: 0.3,  cacheWrite: 3.75  },
+  'claude-sonnet-4':    { input: 3,   output: 15, cacheRead: 0.3,  cacheWrite: 3.75  },
+  'claude-haiku-4-5':   { input: 1,   output: 5,  cacheRead: 0.1,  cacheWrite: 1.25  },
 };
-const DEFAULT_PRICING = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+const DEFAULT_PRICING = PRICING['claude-sonnet-5-5'];
+const ZERO_PRICING = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+function pricingFor(model) {
+  if (!model || model.startsWith('<')) return ZERO_PRICING; // e.g. Claude Code's "<synthetic>"
+  if (model.startsWith('gemini')) return geminiScanner.getPricing(model);
+  // Dated ids such as "claude-haiku-4-5-20251001" share the alias's price
+  return PRICING[model] || PRICING[model.replace(/-\d{8}$/, '')] || DEFAULT_PRICING;
+}
 
 function calcCost(model, inputTokens, outputTokens, cacheRead, cacheWrite) {
-  const p = PRICING[model] || DEFAULT_PRICING;
+  const p = pricingFor(model);
   return (
     (inputTokens  / 1e6) * p.input +
     (outputTokens / 1e6) * p.output +
@@ -86,10 +110,67 @@ function openDb() {
   return db;
 }
 
+// Fallback when a transcript has no `cwd`: the encoded folder directly under
+// ~/.claude/projects (subagent transcripts live deeper, in <session>/subagents/).
+// The encoding turns every separator into "-", so hyphenated names can't be
+// recovered exactly — prefer projectNameFromCwd.
 function projectNameFromPath(filePath) {
-  const parts = filePath.split(path.sep);
-  const projectDir = parts[parts.length - 2] || 'unknown';
-  return projectDir.replace(/^-/, '').replace(/-/g, '/').split('/').pop() || projectDir;
+  const rel = path.relative(CLAUDE_PROJECTS_DIR, filePath).split(path.sep);
+  const projectDir = rel.length > 1 ? rel[0] : 'unknown';
+  const parts = projectDir.split('-').filter(Boolean);
+  if (!parts.length) return projectDir;
+  const last = parts[parts.length - 1];
+  // A bare version suffix ("HabasLiman-2", "Site-v2") belongs to the name
+  return /^v?\d+$/i.test(last) && parts.length > 1 ? `${parts[parts.length - 2]}-${last}` : last;
+}
+
+// "D:\Development\Cts Ai Devs" -> "Cts Ai Devs"
+function projectNameFromCwd(cwd) {
+  return cwd ? cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || null : null;
+}
+
+// First `cwd` in a transcript, reading only its beginning
+function readCwd(filePath) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(64 * 1024);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const m = buf.toString('utf8', 0, n).match(/"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    return m ? JSON.parse(`"${m[1]}"`) : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+// One-time fix for rows stored before project names came from `cwd`
+// (subagent transcripts were filed under a "subagents" project and
+// hyphenated names were truncated). Updates names without re-scanning.
+function migrateProjectNames(db) {
+  db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)');
+  if (db.prepare("SELECT value FROM meta WHERE key = 'project_names_v2'").get()) return;
+
+  const update = db.prepare("UPDATE sessions SET project_name = ? WHERE session_id = ? AND provider = 'claude'");
+  const files = db.prepare('SELECT path FROM processed_files').all()
+    .map(r => r.path)
+    .filter(p => p.startsWith(CLAUDE_PROJECTS_DIR) && p.endsWith('.jsonl'));
+
+  // Claude Code deletes old transcripts, so many processed files are gone.
+  // Learn each encoded project folder's real name from files that still exist.
+  const topDir = f => path.relative(CLAUDE_PROJECTS_DIR, f).split(path.sep)[0];
+  const cwdName = new Map(files.map(f => [f, projectNameFromCwd(readCwd(f))]));
+  const dirName = new Map();
+  for (const [f, name] of cwdName) if (name && !dirName.has(topDir(f))) dirName.set(topDir(f), name);
+
+  db.transaction(() => {
+    for (const file of files) {
+      const name = cwdName.get(file) || dirName.get(topDir(file)) || projectNameFromPath(file);
+      update.run(name, sessionIdFromPath(file));
+    }
+    db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('project_names_v2', ?)").run(new Date().toISOString());
+  })();
 }
 
 function sessionIdFromPath(filePath) {
@@ -111,7 +192,13 @@ function scanFile(db, filePath) {
     const lines = content.split('\n').filter(l => l.trim());
 
     const sessionId = sessionIdFromPath(filePath);
-    const projectName = projectNameFromPath(filePath);
+    let cwd = null;
+    for (const line of lines) {
+      if (!line.includes('"cwd"')) continue;
+      try { cwd = JSON.parse(line).cwd || null; } catch {}
+      if (cwd) break;
+    }
+    const projectName = projectNameFromCwd(cwd) || projectNameFromPath(filePath);
 
     let firstTimestamp = null;
     let lastTimestamp = null;
@@ -195,6 +282,7 @@ function scan() {
   let scanned = 0;
 
   try {
+    migrateProjectNames(db);
     const files = getAllJsonlFiles(CLAUDE_PROJECTS_DIR);
     for (const file of files) {
       try {
@@ -300,10 +388,84 @@ function queryStats(filters = {}) {
         : 0
     }));
 
-    return { summary: { ...summary, totalCost }, dailyRows, projectRows, modelRows: modelRowsWithCost, recentSessions };
+    const activity = filters.activity ? queryActivity(db, whereSession, params, sessions) : null;
+
+    return { summary: { ...summary, totalCost }, dailyRows, projectRows, modelRows: modelRowsWithCost, recentSessions, activity };
   } finally {
     db.close();
   }
+}
+
+// Gaps between consecutive requests up to this long count as working time;
+// longer gaps are breaks (sessions are often resumed hours or days later).
+const ACTIVE_GAP_SEC = 30 * 60;
+
+/**
+ * Turn-level activity for the sessions matching `whereSession`:
+ * most active days, longest sessions and time per project (active time),
+ * and which models each project used (counted per request).
+ */
+function queryActivity(db, whereSession, params, sessions) {
+  const inSessions = `session_id IN (SELECT session_id FROM sessions WHERE ${whereSession})`;
+
+  const activeDays = db.prepare(`
+    SELECT DATE(timestamp, 'localtime') AS day,
+           COUNT(*) AS requests,
+           SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens
+    FROM turns WHERE ${inSessions}
+    GROUP BY day ORDER BY requests DESC LIMIT 5
+  `).all(...params);
+
+  const activeBySession = new Map(db.prepare(`
+    WITH gaps AS (
+      SELECT session_id,
+             (julianday(timestamp) - julianday(LAG(timestamp) OVER (PARTITION BY session_id ORDER BY timestamp))) * 86400 AS gap
+      FROM turns WHERE ${inSessions}
+    )
+    SELECT session_id, SUM(CASE WHEN gap <= ${ACTIVE_GAP_SEC} THEN gap ELSE 0 END) AS activeSec
+    FROM gaps GROUP BY session_id
+  `).all(...params).map(r => [r.session_id, r.activeSec || 0]));
+
+  // Subagent transcripts (agent-*.jsonl) run in parallel with their parent
+  // session, so they're left out of time totals to avoid counting hours twice
+  const timed = sessions
+    .filter(s => !String(s.session_id).startsWith('agent-'))
+    .map(s => ({ ...s, activeSec: Math.round(activeBySession.get(s.session_id) || 0) }))
+    .filter(s => s.activeSec > 0);
+
+  const longestSessions = [...timed]
+    .sort((a, b) => b.activeSec - a.activeSec)
+    .slice(0, 5)
+    .map(s => ({ project_name: s.project_name, model: s.model, first_timestamp: s.first_timestamp, turns: s.turn_count, activeSec: s.activeSec }));
+
+  const byProject = new Map();
+  for (const s of timed) {
+    const p = byProject.get(s.project_name) || { project_name: s.project_name, activeSec: 0, sessions: 0 };
+    p.activeSec += s.activeSec;
+    p.sessions += 1;
+    byProject.set(s.project_name, p);
+  }
+  const projectTime = [...byProject.values()].sort((a, b) => b.activeSec - a.activeSec).slice(0, 5);
+
+  // Models per project, counted per request (a session can switch models)
+  const top = new Set(projectTime.map(p => p.project_name));
+  const modelsByProject = new Map();
+  for (const r of db.prepare(`
+    SELECT s.project_name AS project, t.model AS model, COUNT(*) AS requests
+    FROM turns t JOIN sessions s ON s.session_id = t.session_id
+    WHERE t.${inSessions} AND t.model IS NOT NULL AND t.model NOT LIKE '<%'
+    GROUP BY s.project_name, t.model
+  `).all(...params)) {
+    if (!top.has(r.project)) continue;
+    if (!modelsByProject.has(r.project)) modelsByProject.set(r.project, []);
+    modelsByProject.get(r.project).push({ model: r.model, requests: r.requests });
+  }
+  const projectModels = projectTime.map(p => ({
+    project_name: p.project_name,
+    models: (modelsByProject.get(p.project_name) || []).sort((a, b) => b.requests - a.requests)
+  }));
+
+  return { activeDays, longestSessions, projectTime, projectModels };
 }
 
 function getAvailableModels() {
@@ -318,6 +480,7 @@ function getAvailableModels() {
 // scanAndStore is an alias for scan (used by ClaudeProvider.scanLocal)
 function scanAndStore(db) {
   if (!fs.existsSync(CLAUDE_PROJECTS_DIR)) return { scanned: 0, error: null };
+  migrateProjectNames(db);
 
   let scanned = 0;
   const files = getAllJsonlFiles(CLAUDE_PROJECTS_DIR);
@@ -332,4 +495,4 @@ function scanAndStore(db) {
   return { scanned, error: null };
 }
 
-module.exports = { scan, scanAndStore, queryStats, openDb, getAvailableModels, PRICING, calcCost };
+module.exports = { scan, scanAndStore, queryStats, openDb, getAvailableModels, PRICING, calcCost, pricingFor, migrateProjectNames, projectNameFromCwd };

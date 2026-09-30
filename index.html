@@ -69,6 +69,19 @@
             <span id="projection-text"></span>
           </div>
 
+          <div class="card" id="top-models-card" hidden>
+            <div class="card-head">
+              <span class="card-title" data-i18n="top-models">En çok kullanılan modeller</span>
+              <span class="muted small" data-i18n="top-models-sub">Son 7 gün · istek</span>
+            </div>
+            <div class="top-model">
+              <span class="top-model-name" id="top-model-name"></span>
+              <span class="top-model-pct mono" id="top-model-pct"></span>
+            </div>
+            <div class="stack-bar" id="top-models-stack"></div>
+            <div class="model-list" id="top-models-list"></div>
+          </div>
+
           <div class="card" id="history-card">
             <div class="card-head">
               <span class="card-title" data-i18n="last-7-days">Son 7 gün</span>
@@ -97,6 +110,7 @@
               <button data-period="7">7g</button>
               <button data-period="30">30g</button>
               <button data-period="90">90g</button>
+              <button data-period="0">Tümü</button>
             </div>
             <select id="model-select" class="select"></select>
           </div>
@@ -120,8 +134,8 @@
             <div class="bar-labels" id="daily-bar-labels"></div>
             <div class="tok-foot">
               <span id="tok-change"></span>
-              <span id="tok-mix"></span>
             </div>
+            <div class="tok-types" id="tok-types"></div>
           </div>
 
           <div class="card">
@@ -136,6 +150,29 @@
           <div class="card">
             <span class="card-title" data-i18n="top-projects">En çok kullanan projeler</span>
             <div class="project-list" id="project-list"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title" data-i18n="project-time">En çok zaman harcanan projeler</span>
+            </div>
+            <div class="project-list" id="project-time-list"></div>
+            <span class="muted small" data-i18n="active-time-note">Aktif süre: 30 dakikadan uzun aralar sayılmaz</span>
+          </div>
+
+          <div class="card">
+            <span class="card-title" data-i18n="project-models">Projelere göre modeller</span>
+            <div class="project-models" id="project-models-list"></div>
+          </div>
+
+          <div class="card">
+            <span class="card-title" data-i18n="longest-sessions">En uzun oturumlar</span>
+            <div class="session-list" id="longest-sessions-list"></div>
+          </div>
+
+          <div class="card">
+            <span class="card-title" data-i18n="active-days">En aktif günler</span>
+            <div class="project-list" id="active-days-list"></div>
           </div>
         </section>
       </div>

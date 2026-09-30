@@ -77,6 +77,11 @@ const I18N = {
     'kpi-cost': 'Maliyet', 'kpi-sessions': 'Oturum', 'kpi-turns': 'Dönüş',
     'daily-tokens': 'Günlük token', 'token-word': 'token',
     'model-dist': 'Model dağılımı', 'top-projects': 'En çok kullanan projeler',
+    'top-models': 'En çok kullanılan modeller', 'top-models-sub': 'Son 7 gün · istek', 'requests': 'istek',
+    'tok-input': 'Input', 'tok-output': 'Output', 'tok-cache-read': 'Cache okuma', 'tok-cache-write': 'Cache yazma',
+    'project-time': 'En çok zaman harcanan projeler', 'active-time-note': 'Aktif süre: 30 dakikadan uzun aralar sayılmaz',
+    'project-models': 'Projelere göre modeller', 'longest-sessions': 'En uzun oturumlar', 'active-days': 'En aktif günler',
+    'weekdays': ['Paz', 'Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt'],
     'quit': 'Uygulamayı kapat',
     'providers-label': "PROVIDER'LAR", 'general-label': 'GENEL', 'account-label': 'HESAP',
     'launch-at-login': 'Windows açılışında başlat', 'language': 'Dil',
@@ -99,7 +104,7 @@ const I18N = {
     'no-limits': 'Bu provider limit verisi sunmuyor — yerel kullanım gösteriliyor.',
     'no-data': 'Bu dönem için veri yok.',
     'all-models': 'Tüm modeller', 'other': 'Diğer',
-    'period-total': 'Son {n} gün toplamı',
+    'period-total': 'Son {n} gün toplamı', 'all-time': 'Tümü', 'all-time-total': 'Tüm zamanların toplamı',
     'change': 'Önceki döneme göre {v} {w}.', 'up': 'arttı', 'down': 'azaldı',
     'connected': 'Bağlı', 'not-found': 'Bulunamadı',
     'hint-on': 'Yerel CLI oturumundan otomatik algılandı. Farklı bir hesap için API anahtarı girebilirsin.',
@@ -122,6 +127,11 @@ const I18N = {
     'kpi-cost': 'Cost', 'kpi-sessions': 'Sessions', 'kpi-turns': 'Turns',
     'daily-tokens': 'Daily tokens', 'token-word': 'tokens',
     'model-dist': 'Model mix', 'top-projects': 'Top projects',
+    'top-models': 'Most used models', 'top-models-sub': 'Last 7 days · requests', 'requests': 'requests',
+    'tok-input': 'Input', 'tok-output': 'Output', 'tok-cache-read': 'Cache read', 'tok-cache-write': 'Cache write',
+    'project-time': 'Most time spent', 'active-time-note': 'Active time: breaks longer than 30 minutes are not counted',
+    'project-models': 'Models by project', 'longest-sessions': 'Longest sessions', 'active-days': 'Most active days',
+    'weekdays': ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
     'quit': 'Quit app',
     'providers-label': 'PROVIDERS', 'general-label': 'GENERAL', 'account-label': 'ACCOUNT',
     'launch-at-login': 'Launch at Windows startup', 'language': 'Language',
@@ -144,7 +154,7 @@ const I18N = {
     'no-limits': 'This provider has no limit data — showing local usage.',
     'no-data': 'No data for this period.',
     'all-models': 'All models', 'other': 'Other',
-    'period-total': 'Last {n} days total',
+    'period-total': 'Last {n} days total', 'all-time': 'All', 'all-time-total': 'All-time total',
     'change': '{v} {w} vs previous period.', 'up': 'up', 'down': 'down',
     'connected': 'Connected', 'not-found': 'Not found',
     'hint-on': 'Detected from the local CLI session. Enter an API key to use a different account.',
@@ -168,7 +178,9 @@ function applyStaticText() {
   document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
   document.querySelectorAll('[data-i18n-title]').forEach(el => { el.title = t(el.dataset.i18nTitle); });
   document.querySelectorAll('#interval-tabs button').forEach(b => { b.textContent = `${b.dataset.interval} ${t('min')}`; });
-  document.querySelectorAll('#period-tabs button').forEach(b => { b.textContent = `${b.dataset.period}${t('day-suffix')}`; });
+  document.querySelectorAll('#period-tabs button').forEach(b => {
+    b.textContent = b.dataset.period === '0' ? t('all-time') : `${b.dataset.period}${t('day-suffix')}`;
+  });
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -393,10 +405,12 @@ async function loadDetail() {
   const model = state.model;
   const q = f => window.electronAPI.getDetailedStats(f).then(r => (r.success ? r.data : null)).catch(() => null);
 
+  // days = 0 is "all time": no previous period to compare against
   const [all, filtered, twice] = await Promise.all([
-    q({ provider, days }),
-    model === 'all' ? null : q({ provider, days, model }),
-    q({ provider, days: days * 2, model })
+    // Activity (turn-level) queries only run for the query that feeds the view
+    q({ provider, days, activity: model === 'all' }),
+    model === 'all' ? null : q({ provider, days, model, activity: true }),
+    days ? q({ provider, days: days * 2, model }) : null
   ]);
   state.detail = { key: `${provider}|${days}|${model}`, all, current: filtered || all, twice };
 }
@@ -480,7 +494,7 @@ function renderSummary() {
   $('history-card').hidden = !isClaude;
   $('token-summary-card').hidden = isClaude;
   if (isClaude) renderLineChart();
-  else renderSummaryBars();
+  renderSummaryLocal(isClaude);
 }
 
 function limitCard(label, w) {
@@ -640,13 +654,54 @@ function onLineMove(e) {
   }
 }
 
-async function renderSummaryBars() {
+// Local-scan parts of the summary: most-used models (all providers) and the
+// 7-day token bars (providers without limit data)
+async function renderSummaryLocal(isClaude) {
   const provider = state.provider;
   const res = await window.electronAPI.getDetailedStats({ provider, days: 7 }).catch(() => null);
-  if (provider !== state.provider) return;
-  const vals = dailyTotals(res?.success ? res.data.dailyRows : [], 7);
+  if (provider !== state.provider || state.view !== 'summary') return;
+  const data = res?.success ? res.data : null;
+
+  renderTopModels(data?.modelRows);
+  if (isClaude) return;
+  const vals = dailyTotals(data?.dailyRows || [], 7);
   $('summary-bars').innerHTML = barsHtml(vals, -1);
   $('summary-bar-labels').innerHTML = [6, 3, 0].map(n => `<span>${esc(n === 0 ? t('today') : dateLabel(daysAgo(n)))}</span>`).join('');
+}
+
+// Share of requests (turns) per model. Tokens are dominated by cache reads and
+// cost depends on the pricing table, so turns best reflect "how often".
+function renderTopModels(modelRows) {
+  const merged = new Map();
+  for (const r of modelRows || []) {
+    if (!r.model || r.model.startsWith('<')) continue; // e.g. Claude Code's "<synthetic>"
+    const name = shortModel(r.model);
+    merged.set(name, (merged.get(name) || 0) + (r.turns || 0));
+  }
+  let list = [...merged].map(([name, turns]) => ({ name, turns })).filter(m => m.turns > 0).sort((a, b) => b.turns - a.turns);
+  const total = list.reduce((a, b) => a + b.turns, 0);
+
+  $('top-models-card').hidden = total === 0;
+  if (!total) return;
+
+  if (list.length > 4) {
+    const rest = list.slice(3).reduce((a, b) => a + b.turns, 0);
+    list = [...list.slice(0, 3), { name: t('other'), turns: rest, other: true }];
+  }
+  const colors = modelColors(list.map(m => m.name));
+  const items = list.map((m, i) => ({ ...m, color: m.other ? 'var(--text-4)' : colors[i], share: m.turns / total }));
+  const pct = s => (s > 0 && s < 0.01 ? '<1%' : `${Math.round(s * 100)}%`);
+  const count = n => (n >= 10000 ? fmtTokens(n) : n.toLocaleString(t('numLocale')));
+
+  $('top-model-name').textContent = items[0].name;
+  $('top-model-pct').textContent = pct(items[0].share);
+  $('top-models-stack').innerHTML = items.map(m => `<div style="width:${m.share * 100}%;background:${m.color}"></div>`).join('');
+  $('top-models-list').innerHTML = items.map(m => `<div class="model-row">
+      <span class="sw" style="background:${m.color}"></span>
+      <span class="name">${esc(m.name)}</span>
+      <span class="tok">${count(m.turns)} ${esc(t('requests'))}</span>
+      <span class="pct">${pct(m.share)}</span>
+    </div>`).join('');
 }
 
 // ─── Detail view ─────────────────────────────────────────────────────────────
@@ -695,25 +750,36 @@ async function renderDetail() {
   renderDailyBars(current, twice);
   renderModelMix(all);
   renderProjects(current);
+  renderActivity(current?.activity);
 }
 
+const MAX_BARS = 45;
+
+// Days covered by the selected period; "all time" spans back to the first day with data
+function periodDays(rows) {
+  if (state.period > 0) return state.period;
+  const first = (rows || []).reduce((min, r) => (r.day && r.day < min ? r.day : min), dateKey(new Date()));
+  const [y, m, d] = first.split('-').map(Number);
+  return Math.max(7, Math.round((daysAgo(0) - new Date(y, m - 1, d)) / 86400000) + 1);
+}
+
+// Daily totals grouped into at most MAX_BARS buckets; the last bucket ends today
 function detailBars() {
-  let vals = dailyTotals(state.detail.current?.dailyRows, state.period);
-  let step = 1;
-  if (state.period === 90) {
-    const g = [];
-    for (let i = 0; i < vals.length; i += 2) g.push(vals[i] + (vals[i + 1] || 0));
-    vals = g;
-    step = 2;
-  }
-  return { vals, step };
+  const rows = state.detail.current?.dailyRows;
+  const days = periodDays(rows);
+  const daily = dailyTotals(rows, days);
+  const step = Math.max(1, Math.ceil(days / MAX_BARS));
+  const padded = [...new Array((step - (days % step)) % step).fill(0), ...daily];
+  const vals = [];
+  for (let i = 0; i < padded.length; i += step) vals.push(padded.slice(i, i + step).reduce((a, b) => a + b, 0));
+  return { vals, step, days };
 }
 
 function renderDailyBars(current, twice) {
   const { vals, step } = detailBars();
   const total = vals.reduce((a, b) => a + b, 0);
   const hv = state.barHover >= 0 && state.barHover < vals.length ? state.barHover : -1;
-  const back = i => (vals.length - 1 - i) * step;
+  const back = i => (vals.length - 1 - i) * step; // days ago at the end of bucket i
 
   const bars = $('daily-bars');
   bars.innerHTML = barsHtml(vals, hv);
@@ -721,15 +787,15 @@ function renderDailyBars(current, twice) {
 
   $('tok-big').textContent = fmtTokens(hv >= 0 ? vals[hv] : total);
   $('tok-sub').textContent = hv >= 0
-    ? (step === 2 ? `${dateLabel(daysAgo(back(hv) + 1))} – ${dateLabel(daysAgo(back(hv)))}` : dateLabel(daysAgo(back(hv))))
-    : t('period-total', { n: state.period });
+    ? (step > 1 ? `${dateLabel(daysAgo(back(hv) + step - 1))} – ${dateLabel(daysAgo(back(hv)))}` : dateLabel(daysAgo(back(hv))))
+    : (state.period ? t('period-total', { n: state.period }) : t('all-time-total'));
 
   const labels = [];
   for (let i = 0; i < 5; i++) labels.push(dateLabel(daysAgo(back(Math.round(i * (vals.length - 1) / 4)))));
   $('daily-bar-labels').innerHTML = labels.map(l => `<span>${esc(l)}</span>`).join('');
 
-  // Change vs previous period of equal length
-  const prev = dailyTotals(twice?.dailyRows, state.period, state.period).reduce((a, b) => a + b, 0);
+  // Change vs previous period of equal length (none for "all time")
+  const prev = state.period ? dailyTotals(twice?.dailyRows, state.period, state.period).reduce((a, b) => a + b, 0) : 0;
   const chEl = $('tok-change');
   if (prev > 0 && total > 0) {
     const ch = Math.round((total / prev - 1) * 100);
@@ -741,17 +807,97 @@ function renderDailyBars(current, twice) {
     chEl.hidden = true;
   }
 
-  // Token mix
+  // Token types: absolute amounts and share of the period total
   const sm = current?.summary || {};
-  const cache = (sm.totalCacheRead || 0) + (sm.totalCacheWrite || 0);
-  const all = cache + (sm.totalInput || 0) + (sm.totalOutput || 0);
-  const share = v => {
-    const p = v / all * 100;
-    return p > 0 && p < 1 ? '<1%' : `${Math.round(p)}%`;
-  };
-  $('tok-mix').textContent = all > 0
-    ? `Cache ${share(cache)} · Input ${share(sm.totalInput || 0)} · Output ${share(sm.totalOutput || 0)}`
-    : t('no-data');
+  const types = [
+    ['tok-input', sm.totalInput || 0],
+    ['tok-output', sm.totalOutput || 0],
+    ['tok-cache-read', sm.totalCacheRead || 0],
+    ['tok-cache-write', sm.totalCacheWrite || 0]
+  ];
+  const all = types.reduce((a, [, v]) => a + v, 0);
+  $('tok-types').innerHTML = types.map(([key, v]) => `<div class="tok-type">
+      <span class="label">${esc(t(key))}</span>
+      <span class="value">${fmtTokens(v)}</span>
+      <span class="share">${esc(pctText(all ? v / all : 0))}</span>
+    </div>`).join('');
+}
+
+function pctText(share) {
+  return share > 0 && share < 0.01 ? '<1%' : `${Math.round(share * 100)}%`;
+}
+
+// Active seconds -> "12 sa 48 dk" / "12h 48m"
+function fmtActive(sec) {
+  const mins = Math.round(sec / 60);
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return h > 0 ? t('reset-hm', { h, m }) : t('reset-m', { m });
+}
+
+function dayLabel(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  return `${dateLabel(date)} ${t('weekdays')[date.getDay()]}`;
+}
+
+function renderActivity(activity) {
+  const empty = `<span class="list-empty">${esc(t('no-data'))}</span>`;
+  const a = activity || {};
+  const count = n => n.toLocaleString(t('numLocale'));
+
+  // Time per project
+  const pt = a.projectTime || [];
+  $('project-time-list').innerHTML = pt.length ? pt.map(p => `<div class="project-row wide">
+      <span class="name" title="${esc(p.project_name)}">${esc(p.project_name || '—')}</span>
+      <div class="track"><div style="width:${p.activeSec / pt[0].activeSec * 100}%"></div></div>
+      <span class="cost">${esc(fmtActive(p.activeSec))}</span>
+    </div>`).join('') : empty;
+
+  // Models per project — one colour per model across all projects
+  const pm = (a.projectModels || []).filter(p => p.models.length);
+  const totals = new Map();
+  for (const p of pm) for (const m of p.models) {
+    const name = shortModel(m.model);
+    totals.set(name, (totals.get(name) || 0) + m.requests);
+  }
+  const order = [...totals].sort((x, y) => y[1] - x[1]).map(([name]) => name);
+  const colorOf = new Map(order.map((name, i) => [name, modelColors(order)[i]]));
+  $('project-models-list').innerHTML = pm.length ? pm.map(p => {
+    const merged = new Map();
+    for (const m of p.models) { const n = shortModel(m.model); merged.set(n, (merged.get(n) || 0) + m.requests); }
+    let list = [...merged].map(([name, requests]) => ({ name, requests })).sort((x, y) => y.requests - x.requests);
+    const total = list.reduce((s, m) => s + m.requests, 0);
+    if (list.length > 4) {
+      list = [...list.slice(0, 3), { name: t('other'), requests: list.slice(3).reduce((s, m) => s + m.requests, 0), other: true }];
+    }
+    const items = list.map(m => ({ ...m, color: m.other ? 'var(--text-4)' : colorOf.get(m.name), share: m.requests / total }));
+    return `<div class="pm-item">
+      <div class="pm-head"><span class="name">${esc(p.project_name)}</span><span class="count">${count(total)} ${esc(t('requests'))}</span></div>
+      <div class="stack-bar">${items.map(m => `<div style="width:${m.share * 100}%;background:${m.color}"></div>`).join('')}</div>
+      <div class="pm-legend">${items.map(m => `<span><i style="background:${m.color}"></i>${esc(m.name)} ${esc(pctText(m.share))}</span>`).join('')}</div>
+    </div>`;
+  }).join('') : empty;
+
+  // Longest sessions
+  const ls = a.longestSessions || [];
+  $('longest-sessions-list').innerHTML = ls.length ? ls.map(s => {
+    const date = s.first_timestamp ? dateLabel(new Date(s.first_timestamp)) : '';
+    return `<div class="session-row">
+      <div class="info">
+        <span class="name">${esc(s.project_name || '—')}</span>
+        <span class="sub">${esc([date, shortModel(s.model), `${count(s.turns || 0)} ${t('requests')}`].filter(Boolean).join(' · '))}</span>
+      </div>
+      <span class="dur">${esc(fmtActive(s.activeSec))}</span>
+    </div>`;
+  }).join('') : empty;
+
+  // Most active days
+  const ad = a.activeDays || [];
+  $('active-days-list').innerHTML = ad.length ? ad.map(d => `<div class="project-row wide">
+      <span class="name">${esc(dayLabel(d.day))}</span>
+      <div class="track" title="${esc(fmtTokens(d.tokens || 0) + ' ' + t('token-word'))}"><div style="width:${d.requests / ad[0].requests * 100}%"></div></div>
+      <span class="cost">${count(d.requests)} ${esc(t('requests'))}</span>
+    </div>`).join('') : empty;
 }
 
 function renderModelMix(all) {
