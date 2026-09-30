@@ -6,7 +6,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win"
+    "build": "electron-builder --win",
+    "test": "node scripts/test.js"
   },
   "build": {
     "appId": "com.claude.usage-tracker",
@@ -18,7 +19,9 @@
       "main.js",
       "preload.js",
       "renderer.js",
-      "scanner.js",
+      "db.js",
+      "stats.js",
+      "scan-worker.js",
       "index.html",
       "styles.css",
       "fonts/**/*",

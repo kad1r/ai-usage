@@ -4,25 +4,6 @@ const path = require('path');
 const os = require('os');
 
 const GEMINI_DIR  = path.join(os.homedir(), '.gemini');
-const CHATS_BASE  = path.join(GEMINI_DIR, 'tmp');
-
-// Token pricing per million tokens (USD) — Google Gemini models
-const PRICING = {
-  'gemini-2.5-pro':         { input: 1.25,  output: 10,   cacheRead: 0.31,    cacheWrite: 0 },
-  'gemini-2.5-flash':       { input: 0.15,  output: 0.6,  cacheRead: 0.0375,  cacheWrite: 0 },
-  'gemini-3-flash-preview': { input: 0.15,  output: 0.6,  cacheRead: 0.0375,  cacheWrite: 0 },
-  'gemini-2.0-flash':       { input: 0.1,   output: 0.4,  cacheRead: 0.025,   cacheWrite: 0 },
-  'gemini-2.0-flash-lite':  { input: 0.075, output: 0.3,  cacheRead: 0.01875, cacheWrite: 0 },
-  'gemini-1.5-pro':         { input: 1.25,  output: 5,    cacheRead: 0.31,    cacheWrite: 0 },
-  'gemini-1.5-flash':       { input: 0.075, output: 0.3,  cacheRead: 0.01875, cacheWrite: 0 },
-};
-
-// Fallback pricing for unknown model names — match by substring
-function getPricing(model) {
-  if (!model) return PRICING['gemini-2.0-flash'];
-  const key = Object.keys(PRICING).find(k => model.startsWith(k) || model.includes(k));
-  return key ? PRICING[key] : PRICING['gemini-2.0-flash'];
-}
 
 // Bump when the parsing/token maths changes so already-processed files are re-read
 const PARSER_VERSION = 2;
@@ -33,16 +14,17 @@ const processedKey = filePath => `gemini:v${PARSER_VERSION}:${filePath}`;
  * (*.json — older CLI, *.jsonl — current CLI)
  * Returns [{ filePath, projectName }]
  */
-function findChatFiles() {
-  if (!fs.existsSync(CHATS_BASE)) return [];
+function findChatFiles(geminiDir) {
+  const chatsBase = path.join(geminiDir, 'tmp');
+  if (!fs.existsSync(chatsBase)) return [];
   const results = [];
 
   let projects;
-  try { projects = fs.readdirSync(CHATS_BASE, { withFileTypes: true }); } catch { return []; }
+  try { projects = fs.readdirSync(chatsBase, { withFileTypes: true }); } catch { return []; }
 
   for (const project of projects) {
     if (!project.isDirectory()) continue;
-    const chatsDir = path.join(CHATS_BASE, project.name, 'chats');
+    const chatsDir = path.join(chatsBase, project.name, 'chats');
     if (!fs.existsSync(chatsDir)) continue;
 
     let files;
@@ -101,17 +83,33 @@ function normalizeTokens(t) {
   };
 }
 
-function scanAndStore(db) {
-  const chatFiles = findChatFiles();
+function scanAndStore(db, { geminiDir = GEMINI_DIR } = {}) {
+  const st = {
+    processed: db.prepare('SELECT mtime FROM processed_files WHERE path = ?'),
+    markProcessed: db.prepare('INSERT OR REPLACE INTO processed_files (path, mtime, lines) VALUES (?, ?, ?)'),
+    deleteProcessed: db.prepare('DELETE FROM processed_files WHERE path = ?'),
+    deleteTurns: db.prepare("DELETE FROM turns WHERE session_id = ? AND provider = 'gemini'"),
+    insertTurn: db.prepare(`
+      INSERT INTO turns (session_id, timestamp, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, provider)
+      VALUES (?, ?, ?, ?, ?, ?, 0, 'gemini')
+    `),
+    upsertSession: db.prepare(`
+      INSERT OR REPLACE INTO sessions
+      (session_id, project_name, first_timestamp, last_timestamp, model, turn_count,
+       total_input_tokens, total_output_tokens, total_cache_read, total_cache_creation, provider)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'gemini')
+    `)
+  };
   let newSessions = 0, newTurns = 0;
 
-  for (const { filePath, projectName } of chatFiles) {
+  for (const { filePath, projectName } of findChatFiles(geminiDir)) {
     let stat;
     try { stat = fs.statSync(filePath); } catch { continue; }
+    const mtime = Math.floor(stat.mtimeMs);
 
     const key = processedKey(filePath);
-    const existing = db.prepare('SELECT mtime FROM processed_files WHERE path = ?').get(key);
-    if (existing && existing.mtime === Math.floor(stat.mtimeMs)) continue;
+    const existing = st.processed.get(key);
+    if (existing && existing.mtime === mtime) continue;
 
     let session;
     try {
@@ -121,53 +119,47 @@ function scanAndStore(db) {
     if (!session || !Array.isArray(session.messages)) continue;
 
     const sessionId = 'gemini:' + (session.sessionId || path.basename(filePath, '.json'));
+    // Messages without their own time fall back to the session start, then the
+    // file's mtime — never "now", which would move them on every re-scan
+    const fallbackTs = session.startTime || new Date(stat.mtimeMs).toISOString();
 
-    // Delete stale turns before re-processing
-    db.prepare('DELETE FROM turns WHERE session_id = ? AND provider = ?').run(sessionId, 'gemini');
+    db.transaction(() => {
+      st.deleteTurns.run(sessionId);
 
-    let agg = { model: 'gemini-2.5-pro', turns: 0, inputT: 0, outputT: 0, cacheRead: 0, first: null, last: null };
+      const agg = { model: null, turns: 0, inputT: 0, outputT: 0, cacheRead: 0, first: null, last: null };
+      for (const msg of session.messages) {
+        // Only gemini (assistant) messages carry token counts
+        if (msg.type !== 'gemini' || !msg.tokens) continue;
 
-    for (const msg of session.messages) {
-      // Only gemini (assistant) messages carry token counts
-      if (msg.type !== 'gemini' || !msg.tokens) continue;
+        const model = msg.model || 'gemini-2.5-pro';
+        const { input, output, cached } = normalizeTokens(msg.tokens);
+        const ts = msg.timestamp || fallbackTs;
 
-      const model = msg.model || 'gemini-2.5-pro';
-      const { input: inputTokens, output: outputTokens, cached: cacheTokens } = normalizeTokens(msg.tokens);
-      const ts           = msg.timestamp || session.startTime || new Date().toISOString();
+        st.insertTurn.run(sessionId, ts, model, input, output, cached);
+        newTurns++;
 
-      db.prepare(`
-        INSERT INTO turns (session_id, timestamp, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, provider)
-        VALUES (?, ?, ?, ?, ?, ?, 0, 'gemini')
-      `).run(sessionId, ts, model, inputTokens, outputTokens, cacheTokens);
-      newTurns++;
+        agg.turns++;
+        agg.inputT    += input;
+        agg.outputT   += output;
+        agg.cacheRead += cached;
+        agg.model      = model;
+        if (!agg.first || ts < agg.first) agg.first = ts;
+        if (!agg.last  || ts > agg.last)  agg.last  = ts;
+      }
 
-      agg.turns++;
-      agg.inputT    += inputTokens;
-      agg.outputT   += outputTokens;
-      agg.cacheRead += cacheTokens;
-      agg.model      = model;
-      if (!agg.first || ts < agg.first) agg.first = ts;
-      if (!agg.last  || ts > agg.last)  agg.last  = ts;
-    }
+      if (agg.turns > 0) {
+        st.upsertSession.run(sessionId, projectName, agg.first, agg.last, agg.model,
+          agg.turns, agg.inputT, agg.outputT, agg.cacheRead);
+        newSessions++;
+      }
 
-    if (agg.turns > 0) {
-      db.prepare(`
-        INSERT OR REPLACE INTO sessions
-        (session_id, project_name, first_timestamp, last_timestamp, model, turn_count,
-         total_input_tokens, total_output_tokens, total_cache_read, total_cache_creation, provider)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'gemini')
-      `).run(sessionId, projectName, agg.first, agg.last, agg.model,
-             agg.turns, agg.inputT, agg.outputT, agg.cacheRead);
-      newSessions++;
-    }
-
-    db.prepare('INSERT OR REPLACE INTO processed_files (path, mtime, lines) VALUES (?, ?, ?)')
-      .run(key, Math.floor(stat.mtimeMs), session.messages.length);
-    // Entry written by parser v1 (keyed by the bare path)
-    db.prepare('DELETE FROM processed_files WHERE path = ?').run(filePath);
+      st.markProcessed.run(key, mtime, session.messages.length);
+      // Entry written by parser v1 (keyed by the bare path)
+      st.deleteProcessed.run(filePath);
+    })();
   }
 
   return { newSessions, newTurns };
 }
 
-module.exports = { scanAndStore, parseSession, normalizeTokens, PRICING, getPricing, GEMINI_DIR };
+module.exports = { scanAndStore, parseSession, normalizeTokens, GEMINI_DIR };

@@ -1,4 +1,5 @@
 // providers/base.js
+// Local scanning lives in each provider's scanner.js and runs in scan-worker.js.
 class BaseProvider {
   /** Unique machine-readable ID, e.g. 'claude' */
   get id()    { throw new Error(`${this.constructor.name} must implement id`); }
@@ -10,7 +11,7 @@ class BaseProvider {
   get color() { return '#888888'; }
 
   /**
-   * Returns true if this provider can be used (CLI found, files exist, etc.)
+   * Returns true if this provider can be used (its local data folder exists).
    * @returns {Promise<boolean>}
    */
   async isAvailable() { return false; }
@@ -35,21 +36,6 @@ class BaseProvider {
   async fetchQuota() {
     throw new Error(`${this.constructor.name} must implement fetchQuota`);
   }
-
-  /**
-   * Scans local files and writes sessions/turns into the shared SQLite db.
-   * @param {import('better-sqlite3').Database} db
-   * @returns {Promise<{ newSessions: number, newTurns: number }>}
-   */
-  async scanLocal(db) {
-    return { newSessions: 0, newTurns: 0 };
-  }
-
-  /**
-   * Returns pricing table per model (USD per million tokens).
-   * @returns {Object} { modelName: { input, output, cacheRead, cacheWrite } }
-   */
-  getPricing() { return {}; }
 }
 
 module.exports = BaseProvider;

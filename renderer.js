@@ -27,6 +27,7 @@ const state = {
   usage: null,         // Claude usage API response
   profile: null,
   history: { dataPoints: [] },
+  historyLoaded: false,
   lastFetch: null,
   stale: false,
   lineHover: -1,
@@ -107,9 +108,12 @@ const I18N = {
     'period-total': 'Son {n} gün toplamı', 'all-time': 'Tümü', 'all-time-total': 'Tüm zamanların toplamı',
     'change': 'Önceki döneme göre {v} {w}.', 'up': 'arttı', 'down': 'azaldı',
     'connected': 'Bağlı', 'not-found': 'Bulunamadı',
-    'hint-on': 'Yerel CLI oturumundan otomatik algılandı. Farklı bir hesap için API anahtarı girebilirsin.',
-    'hint-off': 'Yerel kurulum bulunamadı. Bağlanmak için API anahtarını gir.',
-    'api-key': 'API anahtarı (isteğe bağlı)', 'save': 'Kaydet', 'saved': 'Kaydedildi', 'save-error': 'Hata',
+    'hint-on': 'Yerel kurulumdan otomatik algılandı; kullanım yerel kayıtlardan okunuyor.',
+    'hint-off': 'Yerel kurulum bulunamadı. Aracı bu bilgisayarda kullandığında otomatik algılanır.',
+    'err-no-session': 'Claude Code oturumu bulunamadı. Terminalde `claude login` çalıştırın.',
+    'err-session-expired': 'Oturum süresi doldu. Terminalde `claude login` çalıştırın.',
+    'err-rate-limited': 'API limiti aşıldı, ~{m} dk sonra tekrar denenecek.',
+    'err-timeout': 'Sunucu yanıt vermedi, daha sonra tekrar denenecek.',
     'alert-title': '{name} limiti %{p}',
     'alert-body': '{label} limiti %80\'i geçti. Sıfırlanmaya {reset} var.',
     'months': ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'],
@@ -157,9 +161,12 @@ const I18N = {
     'period-total': 'Last {n} days total', 'all-time': 'All', 'all-time-total': 'All-time total',
     'change': '{v} {w} vs previous period.', 'up': 'up', 'down': 'down',
     'connected': 'Connected', 'not-found': 'Not found',
-    'hint-on': 'Detected from the local CLI session. Enter an API key to use a different account.',
-    'hint-off': 'No local install found. Enter an API key to connect.',
-    'api-key': 'API key (optional)', 'save': 'Save', 'saved': 'Saved', 'save-error': 'Error',
+    'hint-on': 'Detected from the local install; usage is read from local logs.',
+    'hint-off': 'No local install found. It is detected automatically once you use the tool on this computer.',
+    'err-no-session': 'No Claude Code session found. Run `claude login` in a terminal.',
+    'err-session-expired': 'Session expired. Run `claude login` in a terminal.',
+    'err-rate-limited': 'API rate limit reached, retrying in ~{m} min.',
+    'err-timeout': 'The server did not respond; will retry later.',
     'alert-title': '{name} limit at {p}%',
     'alert-body': '{label} limit passed 80%. Resets in {reset}.',
     'months': ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
@@ -324,7 +331,11 @@ async function refresh() {
     const [usageRes, profile, history, providers] = await Promise.all([
       window.electronAPI.fetchUsage().then(v => ({ ok: v }), e => ({ err: e })),
       state.profile ? state.profile : window.electronAPI.fetchProfile().catch(() => null),
-      window.electronAPI.loadHistory().catch(() => ({ dataPoints: [] })),
+      // Loaded once; new points are appended locally by recordHistoryPoint
+      state.historyLoaded ? state.history : window.electronAPI.loadHistory().then(h => {
+        state.historyLoaded = true;
+        return h;
+      }, () => ({ dataPoints: [] })),
       window.electronAPI.getProvidersList().catch(() => [])
     ]);
 
@@ -356,8 +367,13 @@ async function refresh() {
   render();
 }
 
+// Main sends coded errors ("ERR_RATE_LIMITED:5"); anything else is shown as is
 function cleanError(err) {
-  return String(err?.message || err || 'Error').replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+  const msg = String(err?.message || err || 'Error').replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+  const coded = msg.match(/^ERR_([A-Z_]+)(?::(\d+))?$/);
+  if (!coded) return msg;
+  const key = 'err-' + coded[1].toLowerCase().replace(/_/g, '-');
+  return I18N.tr[key] ? t(key, { m: coded[2] }) : msg;
 }
 
 async function recordHistoryPoint(usage) {
@@ -373,6 +389,9 @@ async function recordHistoryPoint(usage) {
   if (!usage._fetchedAt || !last || usage._fetchedAt > last.timestamp) {
     await window.electronAPI.saveDataPoint(point);
     pts.push({ ...point, timestamp: Date.now() });
+    // Same 30-day window main keeps on disk
+    const cutoff = Date.now() - 30 * 86400 * 1000;
+    while (pts.length && pts[0].timestamp <= cutoff) pts.shift();
   }
 }
 
@@ -977,26 +996,9 @@ async function renderSettings() {
       </button>
       <div class="sp-body">
         <span class="sp-hint">${esc(t(p.available ? 'hint-on' : 'hint-off'))}</span>
-        <div class="sp-form">
-          <input type="password" placeholder="${esc(t('api-key'))}">
-          <button class="sp-save">${esc(t('save'))}</button>
-        </div>
       </div>
     </div>`;
   }).join('');
-}
-
-async function saveProviderKey(item) {
-  const btn = item.querySelector('.sp-save');
-  const input = item.querySelector('input');
-  try {
-    await window.electronAPI.saveProviderSettings({ providerId: item.dataset.provider, apiKey: input.value.trim() || null, enabled: true });
-    btn.textContent = t('saved');
-    input.value = '';
-  } catch {
-    btn.textContent = t('save-error');
-  }
-  setTimeout(() => { btn.textContent = t('save'); }, 1500);
 }
 
 // ─── Menu ────────────────────────────────────────────────────────────────────
@@ -1086,7 +1088,6 @@ function bindEvents() {
   $('settings-providers').addEventListener('click', e => {
     const item = e.target.closest('.sp-item');
     if (!item) return;
-    if (e.target.closest('.sp-save')) { saveProviderKey(item); return; }
     if (e.target.closest('.sp-head')) {
       const id = item.dataset.provider;
       state.openSetting = state.openSetting === id ? null : id;

@@ -1,14 +1,11 @@
 // providers/claude/index.js
 const fs = require('fs');
 const BaseProvider = require('../base');
-const scanner = require('./scanner');
 
 class ClaudeProvider extends BaseProvider {
-  constructor(credentialsPath, historyPath) {
+  constructor(credentialsPath) {
     super();
     this.credentialsPath = credentialsPath;
-    this.historyPath = historyPath;
-    this._credentials = null;
   }
 
   get id()    { return 'claude'; }
@@ -20,29 +17,18 @@ class ClaudeProvider extends BaseProvider {
     return fs.existsSync(this.credentialsPath);
   }
 
-  setCredentials(creds) { this._credentials = creds; }
-  getCredentials()      { return this._credentials; }
-
-  setAuthorizedFetch(fn) { this._authorizedFetch = fn; }
-
-  getPricing() {
-    return scanner.PRICING;
-  }
-
-  async scanLocal(db) {
-    return scanner.scanAndStore(db);
-  }
+  // Returns the (cached) usage API response
+  setUsageSource(fn) { this._getUsage = fn; }
 
   async fetchQuota() {
-    if (!this._authorizedFetch) {
+    if (!this._getUsage) {
       return {
         provider: this.id, name: this.name, available: false,
         quota: { session: null, weekly: null, models: [] },
         error: 'Not authenticated'
       };
     }
-    const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
-    const data = await this._authorizedFetch(USAGE_URL);
+    const data = await this._getUsage();
 
     return {
       provider: this.id,
